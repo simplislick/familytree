@@ -1,36 +1,81 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Family Tree Platform (MVP)
 
-## Getting Started
+Mobile-first web app for building shareable family trees. Create a tree, share
+one link, and family members join by email magic link or phone OTP — matching
+an existing placeholder profile (claim) or positioning themselves manually.
+The tree owner gets notified and can move or remove anyone.
 
-First, run the development server:
+## Stack
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- Next.js 15 (App Router) + TypeScript + Tailwind CSS
+- Supabase: Postgres (RLS) + Auth (email magic link, phone OTP)
+- No graph library: the tree is a custom SVG pedigree (`components/TreeCanvas.tsx`,
+  layout in `lib/tree-layout.ts`)
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Setup
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. Create a project at [supabase.com](https://supabase.com) (free tier is fine).
+2. Apply the schema:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+   ```sh
+   supabase link --project-ref <your-ref>
+   supabase db push
+   ```
 
-## Learn More
+   Or paste `supabase/migrations/0001_init.sql` into the SQL editor.
 
-To learn more about Next.js, take a look at the following resources:
+3. Copy `.env.example` to `.env.local` and fill in
+   `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   (Project Settings → Data API / API Keys).
+4. Enable auth providers in Supabase:
+   - **Email** works out of the box (magic link). Add
+     `http://localhost:3000/auth/callback` to the allowed redirect URLs.
+   - **Phone OTP** requires an SMS provider (e.g. Twilio) configured under
+     Authentication → Providers → Phone. Until then, use email.
+5. (Optional) Seed a demo tree: sign up once in the app, then run
+   `scripts/seed.sql` in the SQL editor. The demo tree lives at
+   `/t/demo-share-token` and includes claimable placeholders
+   (`grandma@example.com`, `+1 555 123 4567`).
+6. Run:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+   ```sh
+   npm install
+   npm run dev
+   ```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The app builds without env vars set (pages show a "Supabase not configured"
+notice), so `npm run build` works before a project exists.
 
-## Deploy on Vercel
+## Core flows
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. **Create tree:** sign in with your email → name the tree → get a shareable
+   `/t/[token]` link with a copy button.
+2. **Join via link:** enter name, birth date, and choose email (magic link) or
+   phone (OTP). After verification, `claim_or_create_person` (a single
+   transactional Postgres function) matches on exact email or normalized phone:
+   - placeholder match → claimed, land on the tree view
+   - existing account match → attached
+   - no match → manual self-positioning ("I'm the child/spouse/parent of …")
+3. **Owner moderation:** dashboard notification feed; open the tree to add
+   placeholder relatives, move a person to a different relationship, or remove
+   them.
+4. **View tree:** touch-friendly SVG pedigree — drag to pan, pinch/scroll to
+   zoom, tap a person for details.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Data model
+
+`trees` (share_token drives `/t/[token]`), `persons` (`user_id` null =
+unclaimed placeholder), `relationships` (`parent` / `spouse` edges; child and
+sibling relations are derived), `notifications` (owner feed). All tables are
+RLS-protected; shared-link reads go through security-definer RPCs
+(`get_tree_by_token`, `get_tree_data`).
+
+## Out of scope for MVP
+
+No photos, events, member profile editing beyond self-positioning, or
+merge-duplicate UI (owner "remove" covers it).
+
+## Deploy
+
+Target is Vercel: push the repo, import it, and set the two env vars above.
+Add your production `/auth/callback` URL to Supabase's allowed redirect URLs.
