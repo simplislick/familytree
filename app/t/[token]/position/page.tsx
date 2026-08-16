@@ -47,7 +47,7 @@ export default async function PositionPage({
       </p>
       <div className="mt-6">
         {persons.length === 0 ? (
-          <p className="text-sm text-stone-500">
+          <p className="text-sm text-stone-600">
             This tree is empty — ask the owner to add the first relatives.
           </p>
         ) : (

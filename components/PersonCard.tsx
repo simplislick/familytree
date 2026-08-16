@@ -73,7 +73,7 @@ export default function PersonCard({
         <div>
           <h3 className="text-lg font-semibold">{person.full_name}</h3>
           {person.birth_date && (
-            <p className="text-sm text-stone-500">Born {person.birth_date}</p>
+            <p className="text-sm text-stone-600">Born {person.birth_date}</p>
           )}
           <p className="mt-1 text-xs">
             {person.user_id ? (
@@ -89,7 +89,7 @@ export default function PersonCard({
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="min-h-11 min-w-11 text-xl text-stone-400"
+          className="min-h-11 min-w-11 text-xl text-stone-600"
         >
           ×
         </button>

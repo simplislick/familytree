@@ -24,23 +24,49 @@ export const NODE_HEIGHT = 64;
 const X_GAP = 40;
 const Y_GAP = 120;
 
+// Ids of persons that appear in at least one relationship row.
+function getConnectedIds(persons: Person[], relationships: Relationship[]): Set<string> {
+  const ids = new Set(persons.map((p) => p.id));
+  const connected = new Set<string>();
+  for (const r of relationships) {
+    if (ids.has(r.person_id) && ids.has(r.related_person_id)) {
+      connected.add(r.person_id);
+      connected.add(r.related_person_id);
+    }
+  }
+  return connected;
+}
+
+// Persons with no relationship rows at all — not yet placed in the tree.
+// Shown in the unconnected-members drawer instead of the canvas.
+export function getUnconnectedPersons(persons: Person[], relationships: Relationship[]): Person[] {
+  const connectedIds = getConnectedIds(persons, relationships);
+  return persons.filter((p) => !connectedIds.has(p.id));
+}
+
 /**
- * Computes a simple layered pedigree layout:
+ * Computes a simple layered pedigree layout for connected persons only
+ * (persons with no relationships are surfaced separately, see
+ * `getUnconnectedPersons`):
  *  - generations stacked vertically (depth derived from parent edges)
  *  - spouses placed adjacent, treated as one unit when ordering
  *  - units within a generation ordered by their parents' average x
  */
 export function computeLayout(
-  persons: Person[],
-  relationships: Relationship[],
+  allPersons: Person[],
+  allRelationships: Relationship[],
 ): TreeLayout {
+  if (allPersons.length === 0) return { nodes: [], edges: [], width: 0, height: 0 };
+
+  const connectedIds = getConnectedIds(allPersons, allRelationships);
+  const persons = allPersons.filter((p) => connectedIds.has(p.id));
   if (persons.length === 0) return { nodes: [], edges: [], width: 0, height: 0 };
 
   const ids = new Set(persons.map((p) => p.id));
-  const parentEdges = relationships.filter(
+  const parentEdges = allRelationships.filter(
     (r) => r.type === "parent" && ids.has(r.person_id) && ids.has(r.related_person_id),
   );
-  const spouseEdges = relationships.filter(
+  const spouseEdges = allRelationships.filter(
     (r) => r.type === "spouse" && ids.has(r.person_id) && ids.has(r.related_person_id),
   );
 

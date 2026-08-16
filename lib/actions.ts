@@ -45,6 +45,26 @@ export async function createTree(name: string) {
   redirect(`/t/${token}`);
 }
 
+/** Owner renames their tree. */
+export async function renameTree(token: string, name: string): Promise<ActionResult> {
+  const { supabase, user } = await getAuthedClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+  if (!user) return { ok: false, message: "Not signed in." };
+
+  const tree = await getTreeByToken(supabase, token);
+  if (!tree) return { ok: false, message: "Tree not found." };
+  if (tree.owner_id !== user.id) return { ok: false, message: "Only the owner can rename the tree." };
+
+  const trimmed = name.trim();
+  if (!trimmed) return { ok: false, message: "Please enter a tree name." };
+
+  const { error } = await supabase.from("trees").update({ name: trimmed }).eq("id", tree.id);
+  if (error) return { ok: false, message: error.message };
+
+  revalidatePath(`/t/${token}`);
+  return { ok: true };
+}
+
 /**
  * Unmatched joiner positions themselves: creates their person row plus the
  * relationship edge to an existing anchor person, and notifies the owner.
@@ -101,11 +121,15 @@ export async function positionSelf(input: {
   return { ok: true };
 }
 
-/** Owner adds an unclaimed placeholder relative next to an anchor person. */
+/**
+ * Owner adds a relative. If an anchor person + relation are given, the new
+ * person is linked to them; otherwise the person is created unconnected
+ * (shown in its own section of the tree until the owner moves them in).
+ */
 export async function addRelative(input: {
   token: string;
-  anchorPersonId: string;
-  relation: JoinRelation;
+  anchorPersonId: string | null;
+  relation: JoinRelation | null;
   fullName: string;
   birthDate: string | null;
   email: string | null;
@@ -139,14 +163,17 @@ export async function addRelative(input: {
     return { ok: false, message: personError?.message ?? "Could not add the relative." };
   }
 
-  const edge = relationshipFor(input.relation, person.id, input.anchorPersonId);
-  const { error: relError } = await supabase.from("relationships").insert({
-    tree_id: tree.id,
-    ...edge,
-    created_by: user.id,
-  });
-  if (relError) return { ok: false, message: relError.message };
+  if (input.anchorPersonId && input.relation) {
+    const edge = relationshipFor(input.relation, person.id, input.anchorPersonId);
+    const { error: relError } = await supabase.from("relationships").insert({
+      tree_id: tree.id,
+      ...edge,
+      created_by: user.id,
+    });
+    if (relError) return { ok: false, message: relError.message };
+  }
 
+  revalidatePath(`/t/${input.token}`);
   revalidatePath(`/t/${input.token}/view`);
   return { ok: true };
 }
@@ -181,6 +208,7 @@ export async function movePerson(input: {
   });
   if (relError) return { ok: false, message: relError.message };
 
+  revalidatePath(`/t/${input.token}`);
   revalidatePath(`/t/${input.token}/view`);
   return { ok: true };
 }
@@ -205,6 +233,7 @@ export async function removePerson(input: {
     .eq("tree_id", tree.id);
   if (error) return { ok: false, message: error.message };
 
+  revalidatePath(`/t/${input.token}`);
   revalidatePath(`/t/${input.token}/view`);
   return { ok: true };
 }

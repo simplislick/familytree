@@ -53,7 +53,7 @@ export default async function DashboardPage() {
       </div>
 
       {ownedTrees.length === 0 ? (
-        <p className="text-sm text-stone-500">You haven&apos;t created any trees yet.</p>
+        <p className="text-sm text-stone-600">You haven&apos;t created any trees yet.</p>
       ) : (
         <ul className="space-y-3">
           {ownedTrees.map((tree) => {
@@ -63,7 +63,7 @@ export default async function DashboardPage() {
                 <Link href={sharePath} className="text-lg font-semibold">
                   {tree.name}
                 </Link>
-                <p className="mt-1 truncate text-xs text-stone-500">{sharePath}</p>
+                <p className="mt-1 truncate text-xs text-stone-600">{sharePath}</p>
                 <div className="mt-3 flex gap-2">
                   <CopyButton text={sharePath} />
                   <Link
@@ -82,7 +82,7 @@ export default async function DashboardPage() {
       <section>
         <h2 className="text-lg font-semibold">Notifications</h2>
         {feed.length === 0 ? (
-          <p className="mt-2 text-sm text-stone-500">No activity yet.</p>
+          <p className="mt-2 text-sm text-stone-600">No activity yet.</p>
         ) : (
           <ul className="mt-3 space-y-2">
             {feed.map((n) => (
@@ -90,13 +90,13 @@ export default async function DashboardPage() {
                 key={n.id}
                 className={`rounded-lg border p-3 text-sm ${
                   n.read
-                    ? "border-stone-200 bg-white text-stone-500"
+                    ? "border-stone-200 bg-white text-stone-600"
                     : "border-stone-300 bg-stone-100 text-stone-900"
                 }`}
               >
                 <p>{n.message}</p>
                 <div className="mt-2 flex items-center justify-between">
-                  <span className="text-xs text-stone-400">
+                  <span className="text-xs text-stone-600">
                     {new Date(n.created_at).toLocaleString()}
                   </span>
                   {!n.read && (

@@ -43,7 +43,7 @@ export default async function ViewTreePage({
     <main className="mx-auto max-w-3xl space-y-4 p-4 pt-6">
       <div className="flex items-center justify-between gap-2">
         <h1 className="truncate text-xl font-bold">{tree.name}</h1>
-        <Link href={`/t/${token}`} className="shrink-0 text-sm text-stone-500 underline">
+        <Link href={`/t/${token}`} className="shrink-0 text-sm text-stone-600 underline">
           Tree home
         </Link>
       </div>
@@ -57,7 +57,7 @@ export default async function ViewTreePage({
         isOwner={isOwner}
       />
 
-      <p className="text-xs text-stone-400">
+      <p className="text-xs text-stone-600">
         Drag to pan, pinch or scroll to zoom, tap a person for details.
       </p>
     </main>

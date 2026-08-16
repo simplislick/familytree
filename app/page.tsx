@@ -36,7 +36,7 @@ export default async function Home() {
         )}
       </div>
 
-      <p className="text-sm text-stone-500">
+      <p className="text-sm text-stone-600">
         Have a share link? Open it to join or view the tree — it looks like{" "}
         <code>/t/your-tree-token</code>.
       </p>
