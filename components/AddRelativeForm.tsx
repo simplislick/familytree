@@ -3,6 +3,8 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { addRelative } from "@/lib/actions";
+import { uploadPersonPhoto } from "@/lib/photo-upload";
+import PersonAvatar from "./PersonAvatar";
 import type { JoinRelation, Person } from "@/lib/types";
 
 const RELATION_LABELS: Record<JoinRelation, string> = {
@@ -44,8 +46,25 @@ export default function AddRelativeForm({
   const [phone, setPhone] = useState("");
   const [anchorId, setAnchorId] = useState("");
   const [relation, setRelation] = useState<JoinRelation>("child");
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [error, setError] = useState("");
   const [isPending, startTransition] = useTransition();
+
+  async function handlePhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError("");
+    setIsUploadingPhoto(true);
+    const result = await uploadPersonPhoto(file);
+    setIsUploadingPhoto(false);
+    if (result.ok) {
+      setPhotoUrl(result.url);
+    } else {
+      setError(result.message);
+    }
+  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -62,6 +81,7 @@ export default function AddRelativeForm({
         relation: anchorId ? relation : null,
         fullName,
         birthDate: birthDate || null,
+        photoUrl,
         email: email || null,
         phone: phone || null,
       });
@@ -73,6 +93,7 @@ export default function AddRelativeForm({
         setEmail("");
         setPhone("");
         setAnchorId("");
+        setPhotoUrl(null);
         setOpen(false);
         router.refresh();
       } else {
@@ -115,6 +136,19 @@ export default function AddRelativeForm({
           >
             ×
           </button>
+        </div>
+        <div className="flex items-center gap-3">
+          <PersonAvatar name={firstName || "?"} photoUrl={photoUrl} size={48} />
+          <label className="min-h-11 cursor-pointer rounded-lg border border-stone-300 px-3 py-2 text-sm font-medium text-stone-700">
+            {isUploadingPhoto ? "Uploading…" : photoUrl ? "Change photo" : "Add photo"}
+            <input
+              type="file"
+              accept="image/*"
+              onChange={handlePhotoChange}
+              disabled={isUploadingPhoto}
+              className="hidden"
+            />
+          </label>
         </div>
         <div className="grid grid-cols-2 gap-2">
           <input
@@ -196,7 +230,7 @@ export default function AddRelativeForm({
         <div className="flex gap-2">
           <button
             type="submit"
-            disabled={isPending}
+            disabled={isPending || isUploadingPhoto}
             className="min-h-11 flex-1 rounded-lg bg-stone-800 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
             {isPending ? "Adding…" : "Add"}

@@ -2,7 +2,9 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { movePerson, removePerson } from "@/lib/actions";
+import { movePerson, removePerson, updatePersonPhoto } from "@/lib/actions";
+import { uploadPersonPhoto } from "@/lib/photo-upload";
+import PersonAvatar from "./PersonAvatar";
 import type { JoinRelation, Person } from "@/lib/types";
 
 const RELATION_LABELS: Record<JoinRelation, string> = {
@@ -31,10 +33,32 @@ export default function PersonCard({
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [anchorId, setAnchorId] = useState("");
   const [relation, setRelation] = useState<JoinRelation>("child");
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [error, setError] = useState("");
   const [isPending, startTransition] = useTransition();
 
   const others = persons.filter((p) => p.id !== person.id);
+
+  async function handlePhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError("");
+    setIsUploadingPhoto(true);
+    const uploadResult = await uploadPersonPhoto(file);
+    if (!uploadResult.ok) {
+      setIsUploadingPhoto(false);
+      setError(uploadResult.message);
+      return;
+    }
+    const result = await updatePersonPhoto({ token, personId: person.id, photoUrl: uploadResult.url });
+    setIsUploadingPhoto(false);
+    if (result.ok) {
+      router.refresh();
+    } else {
+      setError(result.message);
+    }
+  }
 
   function handleMove(e: React.FormEvent) {
     e.preventDefault();
@@ -70,20 +94,37 @@ export default function PersonCard({
   return (
     <div className="fixed inset-x-0 bottom-0 z-10 rounded-t-2xl border-t border-stone-200 bg-white p-5 shadow-2xl sm:inset-x-auto sm:bottom-4 sm:right-4 sm:w-80 sm:rounded-2xl sm:border">
       <div className="flex items-start justify-between">
-        <div>
-          <h3 className="text-lg font-semibold">{person.full_name}</h3>
-          {person.birth_date && (
-            <p className="text-sm text-stone-600">Born {person.birth_date}</p>
-          )}
-          <p className="mt-1 text-xs">
-            {person.user_id ? (
-              <span className="rounded-full bg-green-100 px-2 py-0.5 text-green-800">Member</span>
-            ) : (
-              <span className="rounded-full bg-stone-100 px-2 py-0.5 text-stone-600">
-                Not yet joined
-              </span>
+        <div className="flex items-start gap-3">
+          <div className="shrink-0">
+            <PersonAvatar name={person.full_name} photoUrl={person.photo_url} size={48} />
+            {isOwner && (
+              <label className="mt-1 block cursor-pointer text-center text-[11px] font-medium text-stone-600 underline">
+                {isUploadingPhoto ? "Uploading…" : "Change"}
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handlePhotoChange}
+                  disabled={isUploadingPhoto}
+                  className="hidden"
+                />
+              </label>
             )}
-          </p>
+          </div>
+          <div>
+            <h3 className="text-lg font-semibold">{person.full_name}</h3>
+            {person.birth_date && (
+              <p className="text-sm text-stone-600">Born {person.birth_date}</p>
+            )}
+            <p className="mt-1 text-xs">
+              {person.user_id ? (
+                <span className="rounded-full bg-green-100 px-2 py-0.5 text-green-800">Member</span>
+              ) : (
+                <span className="rounded-full bg-stone-100 px-2 py-0.5 text-stone-700">
+                  Not yet joined
+                </span>
+              )}
+            </p>
+          </div>
         </div>
         <button
           type="button"

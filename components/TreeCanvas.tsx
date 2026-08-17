@@ -5,11 +5,13 @@ import { useRouter } from "next/navigation";
 import {
   computeLayout,
   getUnconnectedPersons,
+  AVATAR_SIZE,
   NODE_HEIGHT,
   NODE_WIDTH,
   type LayoutNode,
 } from "@/lib/tree-layout";
 import { movePerson } from "@/lib/actions";
+import PersonAvatar from "./PersonAvatar";
 import PersonCard from "./PersonCard";
 import type { JoinRelation, Person, Relationship } from "@/lib/types";
 
@@ -25,7 +27,7 @@ const RELATION_LABELS: Record<JoinRelation, string> = {
 };
 
 type View = { x: number; y: number; scale: number };
-type Drag = { personId: string; name: string; x: number; y: number };
+type Drag = { personId: string; name: string; photoUrl: string | null; x: number; y: number };
 type ConnectPrompt = { personId: string; personName: string; anchorId: string; anchorName: string };
 
 // Touch-friendly SVG pedigree viewer: pan by dragging, zoom with the scroll
@@ -174,11 +176,16 @@ export default function TreeCanvas({
     return hit?.id ?? null;
   }
 
-  function handleDragStart(e: React.PointerEvent<HTMLButtonElement>, personId: string, name: string) {
+  function handleDragStart(
+    e: React.PointerEvent<HTMLButtonElement>,
+    personId: string,
+    name: string,
+    photoUrl: string | null,
+  ) {
     e.currentTarget.setPointerCapture(e.pointerId);
     dragOrigin.current = { x: e.clientX, y: e.clientY };
     dragMoved.current = false;
-    setDrag({ personId, name, x: e.clientX, y: e.clientY });
+    setDrag({ personId, name, photoUrl, x: e.clientX, y: e.clientY });
     setHoverTargetId(null);
   }
 
@@ -271,17 +278,17 @@ export default function TreeCanvas({
                   <line
                     key={`s-${i}`}
                     x1={from.x + NODE_WIDTH / 2}
-                    y1={from.y + NODE_HEIGHT / 2}
+                    y1={from.y + AVATAR_SIZE / 2}
                     x2={to.x + NODE_WIDTH / 2}
-                    y2={to.y + NODE_HEIGHT / 2}
-                    stroke="#78716c"
+                    y2={to.y + AVATAR_SIZE / 2}
+                    stroke="#57534e"
                     strokeWidth={2}
                   />
                 );
               }
-              // Parent edge: elbow from the parent's bottom to the child's top.
+              // Parent edge: elbow from the parent's avatar bottom to the child's avatar top.
               const x1 = from.x + NODE_WIDTH / 2;
-              const y1 = from.y + NODE_HEIGHT;
+              const y1 = from.y + AVATAR_SIZE;
               const x2 = to.x + NODE_WIDTH / 2;
               const y2 = to.y;
               const midY = (y1 + y2) / 2;
@@ -290,7 +297,7 @@ export default function TreeCanvas({
                   key={`p-${i}`}
                   d={`M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`}
                   fill="none"
-                  stroke="#78716c"
+                  stroke="#57534e"
                   strokeWidth={2}
                 />
               );
@@ -299,6 +306,17 @@ export default function TreeCanvas({
               const person = personById.get(n.id);
               if (!person) return null;
               const isDropTarget = hoverTargetId === n.id;
+              const isSelected = selectedId === n.id;
+              const ringColor = isDropTarget
+                ? "#3b82f6"
+                : isSelected
+                  ? "#292524"
+                  : person.user_id
+                    ? "#86efac"
+                    : "#9ca3af";
+              const cx = NODE_WIDTH / 2;
+              const cr = AVATAR_SIZE / 2;
+              const clipId = `avatar-clip-${n.id}`;
               return (
                 <g
                   key={n.id}
@@ -306,29 +324,60 @@ export default function TreeCanvas({
                   onClick={() => handleNodeClick(n.id)}
                   className="cursor-pointer"
                 >
-                  <rect
-                    width={NODE_WIDTH}
-                    height={NODE_HEIGHT}
-                    rx={10}
-                    fill={isDropTarget ? "#eff6ff" : person.user_id ? "#f0fdf4" : "#ffffff"}
-                    stroke={isDropTarget ? "#3b82f6" : selectedId === n.id ? "#292524" : "#d6d3d1"}
-                    strokeWidth={isDropTarget || selectedId === n.id ? 2.5 : 1.5}
+                  {person.photo_url ? (
+                    <>
+                      <clipPath id={clipId}>
+                        <circle cx={cx} cy={cr} r={cr} />
+                      </clipPath>
+                      <image
+                        href={person.photo_url}
+                        x={cx - cr}
+                        y={0}
+                        width={AVATAR_SIZE}
+                        height={AVATAR_SIZE}
+                        preserveAspectRatio="xMidYMid slice"
+                        clipPath={`url(#${clipId})`}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <circle cx={cx} cy={cr} r={cr} fill="#e7e5e4" />
+                      <text
+                        x={cx}
+                        y={cr}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fontSize={AVATAR_SIZE * 0.34}
+                        fontWeight={600}
+                        fill="#78716c"
+                      >
+                        {initials(person.full_name)}
+                      </text>
+                    </>
+                  )}
+                  <circle
+                    cx={cx}
+                    cy={cr}
+                    r={cr}
+                    fill="none"
+                    stroke={ringColor}
+                    strokeWidth={isDropTarget || isSelected ? 3 : 2}
                   />
                   <text
-                    x={NODE_WIDTH / 2}
-                    y={NODE_HEIGHT / 2 - 4}
+                    x={cx}
+                    y={AVATAR_SIZE + 16}
                     textAnchor="middle"
                     dominantBaseline="middle"
                     fontSize={13}
                     fontWeight={600}
                     fill="#1c1917"
                   >
-                    {truncate(person.full_name, 18)}
+                    {truncate(person.full_name, 16)}
                   </text>
                   {person.birth_date && (
                     <text
-                      x={NODE_WIDTH / 2}
-                      y={NODE_HEIGHT / 2 + 14}
+                      x={cx}
+                      y={AVATAR_SIZE + 32}
                       textAnchor="middle"
                       dominantBaseline="middle"
                       fontSize={10}
@@ -363,18 +412,23 @@ export default function TreeCanvas({
               <li key={p.id}>
                 <button
                   type="button"
-                  onPointerDown={(e) => handleDragStart(e, p.id, p.full_name)}
+                  onPointerDown={(e) => handleDragStart(e, p.id, p.full_name, p.photo_url)}
                   onPointerMove={handleDragMove}
                   onPointerUp={handleDragEnd}
                   onPointerCancel={() => {
                     setDrag(null);
                     setHoverTargetId(null);
                   }}
-                  className="flex min-h-11 w-full touch-none items-center justify-between rounded-lg border border-dashed border-stone-300 bg-white px-3 py-2 text-left text-sm active:bg-stone-50"
+                  className="flex min-h-11 w-full touch-none items-center gap-2 rounded-lg border border-dashed border-stone-300 bg-white px-3 py-2 text-left text-sm active:bg-stone-50"
                 >
-                  <span className="font-medium text-stone-900">{p.full_name}</span>
+                  <PersonAvatar name={p.full_name} photoUrl={p.photo_url} size={28} />
+                  <span className="min-w-0 flex-1 truncate font-medium text-stone-900">
+                    {p.full_name}
+                  </span>
                   {p.birth_date && (
-                    <span className="text-xs text-stone-600">b. {p.birth_date.slice(0, 4)}</span>
+                    <span className="shrink-0 text-xs text-stone-600">
+                      b. {p.birth_date.slice(0, 4)}
+                    </span>
                   )}
                 </button>
               </li>
@@ -411,9 +465,10 @@ export default function TreeCanvas({
 
       {drag && (
         <div
-          className="pointer-events-none fixed z-30 rounded-lg border border-stone-800 bg-stone-900 px-3 py-2 text-sm font-medium text-white shadow-xl"
+          className="pointer-events-none fixed z-30 flex items-center gap-2 rounded-lg border border-stone-800 bg-stone-900 px-3 py-2 text-sm font-medium text-white shadow-xl"
           style={{ left: drag.x + 12, top: drag.y + 12 }}
         >
+          <PersonAvatar name={drag.name} photoUrl={drag.photoUrl} size={20} />
           {drag.name}
         </div>
       )}
@@ -470,4 +525,11 @@ export default function TreeCanvas({
 
 function truncate(s: string, max: number) {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  const first = parts[0]?.[0] ?? "";
+  const last = parts.length > 1 ? parts[parts.length - 1]?.[0] ?? "" : "";
+  return (first + last).toUpperCase() || "?";
 }

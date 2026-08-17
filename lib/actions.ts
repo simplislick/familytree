@@ -117,7 +117,7 @@ export async function positionSelf(input: {
     });
   }
 
-  revalidatePath(`/t/${input.token}/view`);
+  revalidatePath(`/t/${input.token}`);
   return { ok: true };
 }
 
@@ -132,6 +132,7 @@ export async function addRelative(input: {
   relation: JoinRelation | null;
   fullName: string;
   birthDate: string | null;
+  photoUrl: string | null;
   email: string | null;
   phone: string | null;
 }): Promise<ActionResult> {
@@ -153,6 +154,7 @@ export async function addRelative(input: {
       user_id: null,
       full_name: fullName,
       birth_date: input.birthDate,
+      photo_url: input.photoUrl,
       email: input.email?.trim() || null,
       phone: input.phone?.trim() || null,
       created_by: user.id,
@@ -174,7 +176,6 @@ export async function addRelative(input: {
   }
 
   revalidatePath(`/t/${input.token}`);
-  revalidatePath(`/t/${input.token}/view`);
   return { ok: true };
 }
 
@@ -209,7 +210,6 @@ export async function movePerson(input: {
   if (relError) return { ok: false, message: relError.message };
 
   revalidatePath(`/t/${input.token}`);
-  revalidatePath(`/t/${input.token}/view`);
   return { ok: true };
 }
 
@@ -234,7 +234,41 @@ export async function removePerson(input: {
   if (error) return { ok: false, message: error.message };
 
   revalidatePath(`/t/${input.token}`);
-  revalidatePath(`/t/${input.token}/view`);
+  return { ok: true };
+}
+
+/** Owner or the person themself sets a person's profile photo. */
+export async function updatePersonPhoto(input: {
+  token: string;
+  personId: string;
+  photoUrl: string | null;
+}): Promise<ActionResult> {
+  const { supabase, user } = await getAuthedClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+  if (!user) return { ok: false, message: "Not signed in." };
+
+  const tree = await getTreeByToken(supabase, input.token);
+  if (!tree) return { ok: false, message: "Tree not found." };
+
+  const { data: person } = await supabase
+    .from("persons")
+    .select("user_id")
+    .eq("id", input.personId)
+    .eq("tree_id", tree.id)
+    .maybeSingle();
+  if (!person) return { ok: false, message: "Person not found." };
+  if (tree.owner_id !== user.id && person.user_id !== user.id) {
+    return { ok: false, message: "You can only change your own photo." };
+  }
+
+  const { error } = await supabase
+    .from("persons")
+    .update({ photo_url: input.photoUrl })
+    .eq("id", input.personId)
+    .eq("tree_id", tree.id);
+  if (error) return { ok: false, message: error.message };
+
+  revalidatePath(`/t/${input.token}`);
   return { ok: true };
 }
 
@@ -249,7 +283,7 @@ export async function markNotificationRead(notificationId: string): Promise<Acti
     .eq("id", notificationId);
   if (error) return { ok: false, message: error.message };
 
-  revalidatePath("/dashboard");
+  revalidatePath("/");
   return { ok: true };
 }
 

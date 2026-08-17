@@ -19,8 +19,10 @@ export type TreeLayout = {
   height: number;
 };
 
-export const NODE_WIDTH = 150;
-export const NODE_HEIGHT = 64;
+export const NODE_WIDTH = 120;
+export const AVATAR_SIZE = 64;
+// Avatar (top) + a small gap + two lines of text (name, birth year) below it.
+export const NODE_HEIGHT = AVATAR_SIZE + 8 + 32;
 const X_GAP = 40;
 const Y_GAP = 120;
 

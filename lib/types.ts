@@ -12,6 +12,7 @@ export type Person = {
   user_id: string | null; // null = unclaimed placeholder
   full_name: string;
   birth_date: string | null;
+  photo_url: string | null;
   email: string | null;
   phone: string | null;
   created_by: string;

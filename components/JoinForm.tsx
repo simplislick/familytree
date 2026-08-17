@@ -34,7 +34,7 @@ export default function JoinForm({ token, treeName }: { token: string; treeName:
     const result = await completeJoin({ token, ...details });
     if (result.outcome === "claimed" || result.outcome === "attached") {
       sessionStorage.removeItem(storageKey);
-      router.push(`/t/${token}/view`);
+      router.push(`/t/${token}`);
     } else if (result.outcome === "new") {
       sessionStorage.removeItem(storageKey);
       const params = new URLSearchParams({ name: details.fullName });

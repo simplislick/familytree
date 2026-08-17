@@ -48,7 +48,7 @@ export default function PositionPicker({
         birthDate: birthDate || null,
       });
       if (result.ok) {
-        router.push(`/t/${token}/view`);
+        router.push(`/t/${token}`);
       } else {
         setError(result.message);
       }
