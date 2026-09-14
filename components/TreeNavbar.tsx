@@ -26,7 +26,7 @@ export default function TreeNavbar({
   treeName: string;
   isOwner: boolean;
   showAdd: boolean;
-  onAddClick: () => void;
+  onAddClick?: () => void;
   shareText: string;
   showShare: boolean;
 }) {

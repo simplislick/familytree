@@ -3,7 +3,8 @@
 --
 -- Usage:
 --   1. Apply supabase/migrations/0001_init.sql first.
---   2. Sign up at least one user in the app (they become the demo tree owner).
+--   2. Load the app once (an anonymous session is created automatically —
+--      they become the demo tree owner).
 --   3. Run this file in the Supabase SQL editor (or `supabase db query`).
 --   4. Open /t/demo-share-token in the app.
 --
@@ -22,7 +23,7 @@ declare
 begin
   select id into v_owner from auth.users order by created_at limit 1;
   if v_owner is null then
-    raise exception 'No auth users found. Sign up in the app first, then re-run this seed.';
+    raise exception 'No auth users found. Load the app once first (creates an anonymous session), then re-run this seed.';
   end if;
 
   insert into public.trees (name, owner_id, share_token)

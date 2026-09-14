@@ -9,12 +9,12 @@ export type JoinResult =
   | { outcome: "error"; message: string };
 
 /**
- * Runs after the joiner has verified their email (magic link) or phone (OTP).
- * Matches their details against persons in the tree and claims an unclaimed
- * placeholder or attaches to their existing profile. The match + claim runs
- * inside a single Postgres function (claim_or_create_person), so two people
- * cannot claim the same placeholder. Returns 'new' when there is no match —
- * the joiner then positions themselves manually.
+ * Runs after the joiner submits the join form. Matches their details against
+ * persons in the tree and claims an unclaimed placeholder or attaches to
+ * their existing profile. The match + claim runs inside a single Postgres
+ * function (claim_or_create_person), so two people cannot claim the same
+ * placeholder. Returns 'new' when there is no match — the joiner then
+ * positions themselves manually.
  */
 export async function completeJoin(input: {
   token: string;

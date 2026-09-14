@@ -29,9 +29,8 @@ export default async function JoinPage({
     <main className="mx-auto max-w-md p-6 pt-10">
       <h1 className="text-2xl font-bold">Join {tree.name}</h1>
       <p className="mt-2 text-sm text-stone-600">
-        Enter your details and verify by email link or phone text. If the tree
-        already has a profile for you, you&apos;ll claim it; otherwise you&apos;ll
-        add yourself.
+        Enter your details below. If the tree already has a profile for you,
+        you&apos;ll claim it; otherwise you&apos;ll add yourself.
       </p>
       <div className="mt-6">
         <JoinForm token={token} treeName={tree.name} />

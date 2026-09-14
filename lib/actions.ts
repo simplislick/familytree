@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { nanoid } from "nanoid";
 import { createClient } from "@/lib/supabase/server";
-import type { JoinRelation, Tree } from "@/lib/types";
+import type { JoinRelation, RelationType, Tree } from "@/lib/types";
 
 export type ActionResult = { ok: true } | { ok: false; message: string };
 
@@ -174,6 +174,105 @@ export async function addRelative(input: {
     });
     if (relError) return { ok: false, message: relError.message };
   }
+
+  revalidatePath(`/t/${input.token}`);
+  return { ok: true };
+}
+
+/**
+ * Owner drops an unconnected person onto the tree canvas. No relation yet —
+ * they show in the canvas grid until dragged onto an existing node.
+ */
+export async function placePerson(input: {
+  token: string;
+  personId: string;
+  x: number;
+  y: number;
+}): Promise<ActionResult> {
+  const { supabase, user } = await getAuthedClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+  if (!user) return { ok: false, message: "Not signed in." };
+
+  const tree = await getTreeByToken(supabase, input.token);
+  if (!tree) return { ok: false, message: "Tree not found." };
+  if (tree.owner_id !== user.id) return { ok: false, message: "Only the owner can place people." };
+
+  const { error } = await supabase
+    .from("persons")
+    .update({ placed: true, position_x: Math.round(input.x), position_y: Math.round(input.y) })
+    .eq("id", input.personId)
+    .eq("tree_id", tree.id);
+  if (error) return { ok: false, message: error.message };
+
+  revalidatePath(`/t/${input.token}`);
+  return { ok: true };
+}
+
+/**
+ * Owner drags a wire between two existing people's connection points,
+ * ComfyUI-style. Adds exactly one edge — unlike `movePerson`, it leaves the
+ * rest of both people's connections untouched, since a person can have
+ * multiple parents, children, and a spouse at once.
+ */
+export async function connectPersons(input: {
+  token: string;
+  personId: string;
+  relatedPersonId: string;
+  type: RelationType;
+}): Promise<ActionResult> {
+  const { supabase, user } = await getAuthedClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+  if (!user) return { ok: false, message: "Not signed in." };
+  if (input.personId === input.relatedPersonId) {
+    return { ok: false, message: "A person can't be connected to themself." };
+  }
+
+  const tree = await getTreeByToken(supabase, input.token);
+  if (!tree) return { ok: false, message: "Tree not found." };
+  if (tree.owner_id !== user.id) return { ok: false, message: "Only the owner can connect people." };
+
+  const { data: existing } = await supabase
+    .from("relationships")
+    .select("id")
+    .eq("tree_id", tree.id)
+    .eq("type", input.type)
+    .eq("person_id", input.personId)
+    .eq("related_person_id", input.relatedPersonId)
+    .maybeSingle();
+  if (!existing) {
+    const { error } = await supabase.from("relationships").insert({
+      tree_id: tree.id,
+      person_id: input.personId,
+      related_person_id: input.relatedPersonId,
+      type: input.type,
+      created_by: user.id,
+    });
+    if (error) return { ok: false, message: error.message };
+  }
+
+  revalidatePath(`/t/${input.token}`);
+  return { ok: true };
+}
+
+/** Owner unplugs one connection point — removes a single relationship edge. */
+export async function disconnectPersons(input: {
+  token: string;
+  relationshipId: string;
+}): Promise<ActionResult> {
+  const { supabase, user } = await getAuthedClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+  if (!user) return { ok: false, message: "Not signed in." };
+
+  const tree = await getTreeByToken(supabase, input.token);
+  if (!tree) return { ok: false, message: "Tree not found." };
+  if (tree.owner_id !== user.id) return { ok: false, message: "Only the owner can disconnect people." };
+
+  const { error } = await supabase
+    .from("relationships")
+    .delete()
+    .eq("id", input.relationshipId)
+    .eq("tree_id", tree.id);
+  if (error) return { ok: false, message: error.message };
 
   revalidatePath(`/t/${input.token}`);
   return { ok: true };

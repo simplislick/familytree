@@ -5,26 +5,18 @@ import { useRouter } from "next/navigation";
 import { addRelative } from "@/lib/actions";
 import { uploadPersonPhoto } from "@/lib/photo-upload";
 import PersonAvatar from "./PersonAvatar";
-import type { JoinRelation, Person } from "@/lib/types";
 
-const RELATION_LABELS: Record<JoinRelation, string> = {
-  child: "Child of",
-  spouse: "Spouse of",
-  parent: "Parent of",
-};
-
-// Owner adds an unclaimed placeholder relative; the relative can later claim
-// it by joining with a matching email or phone. Renders as an overlay; pass
-// `open`/`onOpenChange` to drive it externally (e.g. from a navbar "+"), or
-// omit them to use the built-in "+ Add a relative" trigger button.
+// Owner adds an unclaimed placeholder relative, unconnected to anyone yet;
+// the owner links them into the tree afterward, and the relative can later
+// claim the entry by joining with a matching email or phone. Renders as an
+// overlay; pass `open`/`onOpenChange` to drive it externally (e.g. from a
+// navbar "+"), or omit them to use the built-in "+ Add a relative" trigger.
 export default function AddRelativeForm({
   token,
-  persons,
   open: openProp,
   onOpenChange,
 }: {
   token: string;
-  persons: Person[];
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
@@ -44,8 +36,6 @@ export default function AddRelativeForm({
   const [birthDate, setBirthDate] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [anchorId, setAnchorId] = useState("");
-  const [relation, setRelation] = useState<JoinRelation>("child");
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [error, setError] = useState("");
@@ -77,8 +67,8 @@ export default function AddRelativeForm({
     startTransition(async () => {
       const result = await addRelative({
         token,
-        anchorPersonId: anchorId || null,
-        relation: anchorId ? relation : null,
+        anchorPersonId: null,
+        relation: null,
         fullName,
         birthDate: birthDate || null,
         photoUrl,
@@ -92,7 +82,6 @@ export default function AddRelativeForm({
         setBirthDate("");
         setEmail("");
         setPhone("");
-        setAnchorId("");
         setPhotoUrl(null);
         setOpen(false);
         router.refresh();
@@ -197,35 +186,6 @@ export default function AddRelativeForm({
             placeholder="Phone (for claiming)"
             className="block min-h-11 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm text-stone-800 placeholder:text-stone-600"
           />
-        </div>
-        <div className="space-y-2">
-          <select
-            value={anchorId}
-            onChange={(e) => setAnchorId(e.target.value)}
-            aria-label="Related to"
-            className="block min-h-11 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm"
-          >
-            <option value="">Not connected yet (add later)</option>
-            {persons.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.full_name}
-              </option>
-            ))}
-          </select>
-          {anchorId && (
-            <select
-              value={relation}
-              onChange={(e) => setRelation(e.target.value as JoinRelation)}
-              aria-label="Relation"
-              className="block min-h-11 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm"
-            >
-              {(Object.keys(RELATION_LABELS) as JoinRelation[]).map((r) => (
-                <option key={r} value={r}>
-                  {RELATION_LABELS[r]}
-                </option>
-              ))}
-            </select>
-          )}
         </div>
         <div className="flex gap-2">
           <button

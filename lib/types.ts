@@ -15,6 +15,11 @@ export type Person = {
   photo_url: string | null;
   email: string | null;
   phone: string | null;
+  // Dropped onto the tree canvas but not yet connected to anyone — rendered
+  // freeform at (position_x, position_y) instead of sitting in the drawer.
+  placed: boolean;
+  position_x: number | null;
+  position_y: number | null;
   created_by: string;
   created_at: string;
 };

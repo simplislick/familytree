@@ -1,6 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
 import { createTree } from "@/lib/actions";
-import AuthForm from "@/components/AuthForm";
 import SetupNotice from "@/components/SetupNotice";
 
 export const dynamic = "force-dynamic";
@@ -11,24 +10,6 @@ export default async function NewTreePage() {
     return (
       <main className="mx-auto max-w-md p-6 pt-16">
         <SetupNotice />
-      </main>
-    );
-  }
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return (
-      <main className="mx-auto max-w-md p-6 pt-16">
-        <h1 className="text-2xl font-bold">Sign in to create a tree</h1>
-        <p className="mt-2 text-sm text-stone-600">
-          We&apos;ll email you a sign-in link — no password needed.
-        </p>
-        <div className="mt-6">
-          <AuthForm next="/tree/new" />
-        </div>
       </main>
     );
   }

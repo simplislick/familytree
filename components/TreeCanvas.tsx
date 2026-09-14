@@ -4,21 +4,25 @@ import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   computeLayout,
+  getPlacedUnconnected,
   getUnconnectedPersons,
+  snapToGrid,
   AVATAR_SIZE,
   NODE_HEIGHT,
   NODE_WIDTH,
+  type LayoutEdge,
   type LayoutNode,
 } from "@/lib/tree-layout";
-import { movePerson } from "@/lib/actions";
+import { connectPersons, disconnectPersons, movePerson, placePerson } from "@/lib/actions";
 import PersonAvatar from "./PersonAvatar";
 import PersonCard from "./PersonCard";
-import type { JoinRelation, Person, Relationship } from "@/lib/types";
+import type { JoinRelation, Person, RelationType, Relationship } from "@/lib/types";
 
 const MIN_SCALE = 0.3;
 const MAX_SCALE = 2.5;
 const TAP_TOLERANCE_PX = 6;
-const HANDLE_WIDTH = 44;
+const HANDLE_WIDTH = 28;
+const PORT_RADIUS = 7;
 
 const RELATION_LABELS: Record<JoinRelation, string> = {
   child: "Child of",
@@ -26,13 +30,39 @@ const RELATION_LABELS: Record<JoinRelation, string> = {
   parent: "Parent of",
 };
 
+// The three connection points every node exposes, ComfyUI-style: "parent"
+// (top) accepts a wire from someone above, "child" (bottom) sends a wire to
+// someone below, "spouse" (right) links a partner. Which port a wire starts
+// from decides the relationship's direction.
+type Port = "parent" | "child" | "spouse";
+
 type View = { x: number; y: number; scale: number };
 type Drag = { personId: string; name: string; photoUrl: string | null; x: number; y: number };
 type ConnectPrompt = { personId: string; personName: string; anchorId: string; anchorName: string };
+type WireDrag = { fromId: string; port: Port; originX: number; originY: number; x: number; y: number };
+type DisconnectPrompt = { relationshipId: string; aName: string; bName: string; type: RelationType };
+type Point = { id: string; x: number; y: number };
 
-// Touch-friendly SVG pedigree viewer: pan by dragging, zoom with the scroll
-// wheel or pinch, tap a person for their details card. A left-side drawer
-// holds unconnected people; drag one onto a tree node to place them.
+function portPosition(nodeX: number, nodeY: number, port: Port): { x: number; y: number } {
+  switch (port) {
+    case "parent":
+      return { x: nodeX + NODE_WIDTH / 2, y: nodeY };
+    case "child":
+      return { x: nodeX + NODE_WIDTH / 2, y: nodeY + AVATAR_SIZE };
+    case "spouse":
+      return { x: nodeX + NODE_WIDTH, y: nodeY + AVATAR_SIZE / 2 };
+  }
+}
+
+// ComfyUI-style node canvas: pan by dragging, zoom with the scroll wheel or
+// pinch, tap a person for their details card. Connected people are laid out
+// automatically as a pedigree; a left-side drawer holds everyone else — drag
+// one straight onto the canvas to drop them at a grid-snapped spot (they stay
+// draggable from there), or onto an existing node to connect them for the
+// first time. Every node also exposes small connection points (parent/child/
+// spouse) — drag a wire from one to another node to add a relationship
+// without disturbing that person's other connections, and click an existing
+// wire to remove it.
 export default function TreeCanvas({
   token,
   persons,
@@ -50,14 +80,26 @@ export default function TreeCanvas({
     () => getUnconnectedPersons(persons, relationships),
     [persons, relationships],
   );
+  const freeform = useMemo(
+    () => getPlacedUnconnected(persons, relationships),
+    [persons, relationships],
+  );
   const [view, setView] = useState<View>({ x: 24, y: 24, scale: 1 });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [hoverTargetId, setHoverTargetId] = useState<string | null>(null);
+  const [hoverEdgeId, setHoverEdgeId] = useState<string | null>(null);
   const [connectPrompt, setConnectPrompt] = useState<ConnectPrompt | null>(null);
   const [connectError, setConnectError] = useState("");
+  const [wireDrag, setWireDrag] = useState<WireDrag | null>(null);
+  const [wireError, setWireError] = useState("");
+  const [disconnectPrompt, setDisconnectPrompt] = useState<DisconnectPrompt | null>(null);
+  const [disconnectError, setDisconnectError] = useState("");
   const [isConnecting, startConnecting] = useTransition();
+  const [isWiring, startWiring] = useTransition();
+  const [isDisconnecting, startDisconnecting] = useTransition();
+  const [, startPlacing] = useTransition();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
@@ -78,6 +120,20 @@ export default function TreeCanvas({
     persons.forEach((p) => map.set(p.id, p));
     return map;
   }, [persons]);
+
+  // Every node actually rendered on the canvas right now (pedigree +
+  // freeform), used for hit-testing drops and sizing the SVG.
+  const canvasPoints = useMemo<Point[]>(() => {
+    const freeformPoints = freeform.map((p) => ({
+      id: p.id,
+      x: p.position_x ?? 0,
+      y: p.position_y ?? 0,
+    }));
+    return [...layout.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y })), ...freeformPoints];
+  }, [layout, freeform]);
+
+  const svgWidth = Math.max(layout.width, ...canvasPoints.map((p) => p.x + NODE_WIDTH), 1);
+  const svgHeight = Math.max(layout.height, ...canvasPoints.map((p) => p.y + NODE_HEIGHT), 1);
 
   if (persons.length === 0) {
     return (
@@ -160,28 +216,47 @@ export default function TreeCanvas({
     setSelectedId(personId);
   }
 
-  // Hit-tests a screen point against tree nodes, in the canvas's local
-  // (pre-pan/zoom) coordinate space.
-  function hitTestNode(clientX: number, clientY: number): string | null {
+  // Converts a screen point into the canvas's local (pre-pan/zoom) coordinate
+  // space — the same space layout.nodes and freeform positions live in.
+  function toLocalPoint(clientX: number, clientY: number): { x: number; y: number } | null {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return null;
-    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
-      return null;
-    }
-    const localX = (clientX - rect.left - view.x) / view.scale;
-    const localY = (clientY - rect.top - view.y) / view.scale;
-    const hit = layout.nodes.find(
-      (n) => localX >= n.x && localX <= n.x + NODE_WIDTH && localY >= n.y && localY <= n.y + NODE_HEIGHT,
+    return { x: (clientX - rect.left - view.x) / view.scale, y: (clientY - rect.top - view.y) / view.scale };
+  }
+
+  function isWithinCanvas(clientX: number, clientY: number): boolean {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return false;
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  }
+
+  // Hit-tests a screen point against every rendered node, excluding the node
+  // currently being dragged (so repositioning one doesn't "connect" it to
+  // its own old spot).
+  function hitTest(clientX: number, clientY: number, excludeId?: string): string | null {
+    if (!isWithinCanvas(clientX, clientY)) return null;
+    const local = toLocalPoint(clientX, clientY);
+    if (!local) return null;
+    const hit = canvasPoints.find(
+      (n) =>
+        n.id !== excludeId &&
+        local.x >= n.x &&
+        local.x <= n.x + NODE_WIDTH &&
+        local.y >= n.y &&
+        local.y <= n.y + NODE_HEIGHT,
     );
     return hit?.id ?? null;
   }
 
   function handleDragStart(
-    e: React.PointerEvent<HTMLButtonElement>,
+    e: React.PointerEvent<Element>,
     personId: string,
     name: string,
     photoUrl: string | null,
   ) {
+    // Stops the pan layer underneath from also starting a canvas pan when
+    // the drag begins on an already-placed node sitting in the canvas.
+    e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
     dragOrigin.current = { x: e.clientX, y: e.clientY };
     dragMoved.current = false;
@@ -189,8 +264,9 @@ export default function TreeCanvas({
     setHoverTargetId(null);
   }
 
-  function handleDragMove(e: React.PointerEvent<HTMLButtonElement>) {
+  function handleDragMove(e: React.PointerEvent<Element>) {
     if (!drag) return;
+    e.stopPropagation();
     if (
       dragOrigin.current &&
       Math.hypot(e.clientX - dragOrigin.current.x, e.clientY - dragOrigin.current.y) >
@@ -199,14 +275,17 @@ export default function TreeCanvas({
       dragMoved.current = true;
     }
     setDrag((d) => (d ? { ...d, x: e.clientX, y: e.clientY } : d));
-    setHoverTargetId(dragMoved.current ? hitTestNode(e.clientX, e.clientY) : null);
+    setHoverTargetId(dragMoved.current ? hitTest(e.clientX, e.clientY, drag.personId) : null);
   }
 
-  function handleDragEnd(e: React.PointerEvent<HTMLButtonElement>) {
+  function handleDragEnd(e: React.PointerEvent<Element>) {
     if (!drag) return;
+    e.stopPropagation();
     const dragged = drag;
     const moved = dragMoved.current;
-    const targetId = moved ? hitTestNode(e.clientX, e.clientY) : null;
+    const targetId = moved ? hitTest(e.clientX, e.clientY, dragged.personId) : null;
+    const droppedOnCanvas = moved && !targetId && isWithinCanvas(e.clientX, e.clientY);
+    const dropLocal = droppedOnCanvas ? toLocalPoint(e.clientX, e.clientY) : null;
     setDrag(null);
     setHoverTargetId(null);
 
@@ -216,16 +295,28 @@ export default function TreeCanvas({
       setSelectedId(dragged.personId);
       return;
     }
-    if (!targetId) return;
-    const anchor = personById.get(targetId);
-    if (!anchor) return;
-    setConnectError("");
-    setConnectPrompt({
-      personId: dragged.personId,
-      personName: dragged.name,
-      anchorId: targetId,
-      anchorName: anchor.full_name,
-    });
+    if (targetId) {
+      const anchor = personById.get(targetId);
+      if (!anchor) return;
+      setConnectError("");
+      setConnectPrompt({
+        personId: dragged.personId,
+        personName: dragged.name,
+        anchorId: targetId,
+        anchorName: anchor.full_name,
+      });
+      return;
+    }
+    // Dropped on open canvas, not on an existing node: (re)place them at a
+    // grid-snapped spot. Works the same whether they're coming from the
+    // drawer or being repositioned from an existing spot on the canvas.
+    if (dropLocal) {
+      const snapped = snapToGrid(dropLocal.x - NODE_WIDTH / 2, dropLocal.y - AVATAR_SIZE / 2);
+      startPlacing(async () => {
+        const result = await placePerson({ token, personId: dragged.personId, x: snapped.x, y: snapped.y });
+        if (result.ok) router.refresh();
+      });
+    }
   }
 
   function handleConnect(relation: JoinRelation) {
@@ -243,6 +334,98 @@ export default function TreeCanvas({
         router.refresh();
       } else {
         setConnectError(result.message);
+      }
+    });
+  }
+
+  // A wire drag starts on one node's connection point; which port it started
+  // from decides the relationship's direction once it's dropped on another
+  // node (dropping on empty canvas cancels it).
+  function handlePortDown(
+    e: React.PointerEvent<SVGCircleElement>,
+    personId: string,
+    port: Port,
+    nodeX: number,
+    nodeY: number,
+  ) {
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const origin = portPosition(nodeX, nodeY, port);
+    setWireError("");
+    setWireDrag({ fromId: personId, port, originX: origin.x, originY: origin.y, x: origin.x, y: origin.y });
+  }
+
+  function handlePortMove(e: React.PointerEvent<SVGCircleElement>) {
+    if (!wireDrag) return;
+    e.stopPropagation();
+    const local = toLocalPoint(e.clientX, e.clientY);
+    if (!local) return;
+    setWireDrag((d) => (d ? { ...d, x: local.x, y: local.y } : d));
+    setHoverTargetId(hitTest(e.clientX, e.clientY, wireDrag.fromId));
+  }
+
+  function handlePortUp(e: React.PointerEvent<SVGCircleElement>) {
+    if (!wireDrag) return;
+    e.stopPropagation();
+    const wire = wireDrag;
+    const targetId = hitTest(e.clientX, e.clientY, wire.fromId);
+    setWireDrag(null);
+    setHoverTargetId(null);
+    if (!targetId) return;
+
+    let personId: string;
+    let relatedPersonId: string;
+    let type: RelationType;
+    if (wire.port === "child") {
+      // Wire ran from fromId's child (output) port: the target becomes fromId's child.
+      personId = targetId;
+      relatedPersonId = wire.fromId;
+      type = "parent";
+    } else if (wire.port === "parent") {
+      // Wire ran from fromId's parent (input) port: the target becomes fromId's parent.
+      personId = wire.fromId;
+      relatedPersonId = targetId;
+      type = "parent";
+    } else {
+      personId = wire.fromId;
+      relatedPersonId = targetId;
+      type = "spouse";
+    }
+
+    startWiring(async () => {
+      const result = await connectPersons({ token, personId, relatedPersonId, type });
+      if (result.ok) {
+        router.refresh();
+      } else {
+        setWireError(result.message);
+      }
+    });
+  }
+
+  function handlePortCancel() {
+    setWireDrag(null);
+    setHoverTargetId(null);
+  }
+
+  function handleEdgeClick(e: React.MouseEvent, edge: LayoutEdge) {
+    e.stopPropagation();
+    const a = personById.get(edge.from);
+    const b = personById.get(edge.to);
+    if (!a || !b) return;
+    setDisconnectError("");
+    setDisconnectPrompt({ relationshipId: edge.id, aName: a.full_name, bName: b.full_name, type: edge.type });
+  }
+
+  function handleDisconnect() {
+    if (!disconnectPrompt) return;
+    setDisconnectError("");
+    startDisconnecting(async () => {
+      const result = await disconnectPersons({ token, relationshipId: disconnectPrompt.relationshipId });
+      if (result.ok) {
+        setDisconnectPrompt(null);
+        router.refresh();
+      } else {
+        setDisconnectError(result.message);
       }
     });
   }
@@ -268,22 +451,29 @@ export default function TreeCanvas({
             transformOrigin: "0 0",
           }}
         >
-          <svg width={layout.width} height={layout.height}>
-            {layout.edges.map((e, i) => {
+          <svg width={svgWidth} height={svgHeight} style={{ overflow: "visible" }}>
+            {layout.edges.map((e) => {
               const from = nodeById.get(e.from);
               const to = nodeById.get(e.to);
               if (!from || !to) return null;
+              const isHovered = hoverEdgeId === e.id;
+              const stroke = isHovered ? "#dc2626" : "#57534e";
               if (e.type === "spouse") {
+                const x1 = from.x + NODE_WIDTH / 2;
+                const y1 = from.y + AVATAR_SIZE / 2;
+                const x2 = to.x + NODE_WIDTH / 2;
+                const y2 = to.y + AVATAR_SIZE / 2;
                 return (
-                  <line
-                    key={`s-${i}`}
-                    x1={from.x + NODE_WIDTH / 2}
-                    y1={from.y + AVATAR_SIZE / 2}
-                    x2={to.x + NODE_WIDTH / 2}
-                    y2={to.y + AVATAR_SIZE / 2}
-                    stroke="#57534e"
-                    strokeWidth={2}
-                  />
+                  <g
+                    key={e.id}
+                    className="cursor-pointer"
+                    onClick={(ev) => handleEdgeClick(ev, e)}
+                    onPointerEnter={() => setHoverEdgeId(e.id)}
+                    onPointerLeave={() => setHoverEdgeId(null)}
+                  >
+                    <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={16} />
+                    <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={stroke} strokeWidth={2} />
+                  </g>
                 );
               }
               // Parent edge: elbow from the parent's avatar bottom to the child's avatar top.
@@ -292,110 +482,82 @@ export default function TreeCanvas({
               const x2 = to.x + NODE_WIDTH / 2;
               const y2 = to.y;
               const midY = (y1 + y2) / 2;
+              const d = `M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`;
               return (
-                <path
-                  key={`p-${i}`}
-                  d={`M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`}
-                  fill="none"
-                  stroke="#57534e"
-                  strokeWidth={2}
-                />
+                <g
+                  key={e.id}
+                  className="cursor-pointer"
+                  onClick={(ev) => handleEdgeClick(ev, e)}
+                  onPointerEnter={() => setHoverEdgeId(e.id)}
+                  onPointerLeave={() => setHoverEdgeId(null)}
+                >
+                  <path d={d} fill="none" stroke="transparent" strokeWidth={16} />
+                  <path d={d} fill="none" stroke={stroke} strokeWidth={2} />
+                </g>
               );
             })}
             {layout.nodes.map((n) => {
               const person = personById.get(n.id);
               if (!person) return null;
-              const isDropTarget = hoverTargetId === n.id;
-              const isSelected = selectedId === n.id;
-              const ringColor = isDropTarget
-                ? "#3b82f6"
-                : isSelected
-                  ? "#292524"
-                  : person.user_id
-                    ? "#86efac"
-                    : "#9ca3af";
-              const cx = NODE_WIDTH / 2;
-              const cr = AVATAR_SIZE / 2;
-              const clipId = `avatar-clip-${n.id}`;
               return (
-                <g
-                  key={n.id}
-                  transform={`translate(${n.x}, ${n.y})`}
-                  onClick={() => handleNodeClick(n.id)}
-                  className="cursor-pointer"
-                >
-                  {person.photo_url ? (
-                    <>
-                      <clipPath id={clipId}>
-                        <circle cx={cx} cy={cr} r={cr} />
-                      </clipPath>
-                      <image
-                        href={person.photo_url}
-                        x={cx - cr}
-                        y={0}
-                        width={AVATAR_SIZE}
-                        height={AVATAR_SIZE}
-                        preserveAspectRatio="xMidYMid slice"
-                        clipPath={`url(#${clipId})`}
-                      />
-                    </>
-                  ) : (
-                    <>
-                      <circle cx={cx} cy={cr} r={cr} fill="#e7e5e4" />
-                      <text
-                        x={cx}
-                        y={cr}
-                        textAnchor="middle"
-                        dominantBaseline="central"
-                        fontSize={AVATAR_SIZE * 0.34}
-                        fontWeight={600}
-                        fill="#78716c"
-                      >
-                        {initials(person.full_name)}
-                      </text>
-                    </>
-                  )}
-                  <circle
-                    cx={cx}
-                    cy={cr}
-                    r={cr}
-                    fill="none"
-                    stroke={ringColor}
-                    strokeWidth={isDropTarget || isSelected ? 3 : 2}
+                <g key={n.id} transform={`translate(${n.x}, ${n.y})`}>
+                  <AvatarNode
+                    person={person}
+                    isDropTarget={hoverTargetId === n.id}
+                    isSelected={selectedId === n.id}
+                    onClick={() => handleNodeClick(n.id)}
+                    onPortDown={(port, e) => handlePortDown(e, n.id, port, n.x, n.y)}
+                    onPortMove={handlePortMove}
+                    onPortUp={handlePortUp}
+                    onPortCancel={handlePortCancel}
                   />
-                  <text
-                    x={cx}
-                    y={AVATAR_SIZE + 16}
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    fontSize={13}
-                    fontWeight={600}
-                    fill="#1c1917"
-                  >
-                    {truncate(person.full_name, 16)}
-                  </text>
-                  {person.birth_date && (
-                    <text
-                      x={cx}
-                      y={AVATAR_SIZE + 32}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      fontSize={10}
-                      fill="#57534e"
-                    >
-                      b. {person.birth_date.slice(0, 4)}
-                    </text>
-                  )}
                 </g>
               );
             })}
+            {freeform.map((p) => {
+              const x = p.position_x ?? 0;
+              const y = p.position_y ?? 0;
+              return (
+                <g key={p.id} transform={`translate(${x}, ${y})`}>
+                  <AvatarNode
+                    person={p}
+                    dashed
+                    isDropTarget={hoverTargetId === p.id}
+                    isSelected={selectedId === p.id}
+                    onPointerDown={(e) => handleDragStart(e, p.id, p.full_name, p.photo_url)}
+                    onPointerMove={handleDragMove}
+                    onPointerUp={handleDragEnd}
+                    onPointerCancel={() => {
+                      setDrag(null);
+                      setHoverTargetId(null);
+                    }}
+                    onPortDown={(port, e) => handlePortDown(e, p.id, port, x, y)}
+                    onPortMove={handlePortMove}
+                    onPortUp={handlePortUp}
+                    onPortCancel={handlePortCancel}
+                  />
+                </g>
+              );
+            })}
+            {wireDrag && (
+              <line
+                x1={wireDrag.originX}
+                y1={wireDrag.originY}
+                x2={wireDrag.x}
+                y2={wireDrag.y}
+                stroke="#3b82f6"
+                strokeWidth={2}
+                strokeDasharray="4 3"
+                pointerEvents="none"
+              />
+            )}
           </svg>
         </div>
       </div>
 
-      {layout.nodes.length === 0 && unconnected.length > 0 && (
+      {canvasPoints.length === 0 && unconnected.length > 0 && (
         <p className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-stone-600">
-          No one is connected yet — open the drawer and drag someone in.
+          Open the drawer and drag someone onto the canvas to start the tree.
         </p>
       )}
 
@@ -403,15 +565,16 @@ export default function TreeCanvas({
         <div
           className="absolute inset-y-0 left-0 z-[5] flex rounded-r-xl border-r border-stone-200 bg-white shadow-[4px_0_16px_rgba(0,0,0,0.1)] transition-transform duration-300 ease-out"
           style={{
-            width: "min(260px, 70%)",
+            width: "min(130px, 35%)",
             transform: drawerOpen ? "translateX(0)" : `translateX(calc(-100% + ${HANDLE_WIDTH}px))`,
           }}
         >
-          <ul className="flex-1 space-y-2 overflow-y-auto p-3">
+          <ul className="flex-1 space-y-3 overflow-y-auto p-3">
             {unconnected.map((p) => (
               <li key={p.id}>
-                <button
-                  type="button"
+                <PersonTile
+                  person={p}
+                  dashed
                   onPointerDown={(e) => handleDragStart(e, p.id, p.full_name, p.photo_url)}
                   onPointerMove={handleDragMove}
                   onPointerUp={handleDragEnd}
@@ -419,18 +582,7 @@ export default function TreeCanvas({
                     setDrag(null);
                     setHoverTargetId(null);
                   }}
-                  className="flex min-h-11 w-full touch-none items-center gap-2 rounded-lg border border-dashed border-stone-300 bg-white px-3 py-2 text-left text-sm active:bg-stone-50"
-                >
-                  <PersonAvatar name={p.full_name} photoUrl={p.photo_url} size={28} />
-                  <span className="min-w-0 flex-1 truncate font-medium text-stone-900">
-                    {p.full_name}
-                  </span>
-                  {p.birth_date && (
-                    <span className="shrink-0 text-xs text-stone-600">
-                      b. {p.birth_date.slice(0, 4)}
-                    </span>
-                  )}
-                </button>
+                />
               </li>
             ))}
           </ul>
@@ -439,7 +591,7 @@ export default function TreeCanvas({
             onClick={() => setDrawerOpen((v) => !v)}
             aria-expanded={drawerOpen}
             aria-label={drawerOpen ? "Collapse unconnected members" : "Expand unconnected members"}
-            className="flex w-11 shrink-0 flex-col items-center justify-center gap-2 border-l border-stone-200 text-stone-700"
+            className="flex w-7 shrink-0 items-center justify-center border-l border-stone-200 text-stone-700"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -453,12 +605,6 @@ export default function TreeCanvas({
             >
               <polyline points="15 18 9 12 15 6" />
             </svg>
-            <span
-              className="whitespace-nowrap text-xs font-medium"
-              style={{ writingMode: "vertical-rl" }}
-            >
-              Not connected ({unconnected.length})
-            </span>
           </button>
         </div>
       )}
@@ -470,6 +616,15 @@ export default function TreeCanvas({
         >
           <PersonAvatar name={drag.name} photoUrl={drag.photoUrl} size={20} />
           {drag.name}
+        </div>
+      )}
+
+      {(isWiring || wireError) && (
+        <div
+          className="fixed inset-x-0 bottom-4 z-50 mx-auto w-fit cursor-pointer rounded-lg bg-stone-900 px-4 py-2 text-sm text-white shadow-lg"
+          onClick={() => setWireError("")}
+        >
+          {isWiring ? "Connecting…" : wireError}
         </div>
       )}
 
@@ -510,6 +665,44 @@ export default function TreeCanvas({
         </div>
       )}
 
+      {disconnectPrompt && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => (isDisconnecting ? null : setDisconnectPrompt(null))}
+            aria-hidden="true"
+          />
+          <div className="relative z-10 w-full max-w-xs space-y-3 rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl">
+            <h3 className="font-semibold">
+              Disconnect {disconnectPrompt.aName} and {disconnectPrompt.bName}?
+            </h3>
+            <p className="text-sm text-stone-600">
+              This removes the {disconnectPrompt.type === "spouse" ? "spouse" : "parent-child"} connection
+              between them.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={isDisconnecting}
+                onClick={handleDisconnect}
+                className="min-h-11 flex-1 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {isDisconnecting ? "Disconnecting…" : "Disconnect"}
+              </button>
+              <button
+                type="button"
+                disabled={isDisconnecting}
+                onClick={() => setDisconnectPrompt(null)}
+                className="min-h-11 rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-stone-700 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+            {disconnectError && <p className="text-sm text-red-700">{disconnectError}</p>}
+          </div>
+        </div>
+      )}
+
       {selected && (
         <PersonCard
           token={token}
@@ -520,6 +713,197 @@ export default function TreeCanvas({
         />
       )}
     </div>
+  );
+}
+
+// Circular avatar + name (+ birth year) below it, used for both pedigree
+// nodes (tap to open, positioned by the layout algorithm) and freeform nodes
+// (tap to open, drag to reposition or connect — pointer handlers passed in).
+// Every node also renders three small connection points (parent/child/
+// spouse); dragging from one starts a wire to another node.
+function AvatarNode({
+  person,
+  isDropTarget,
+  isSelected,
+  dashed,
+  onClick,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
+  onPortDown,
+  onPortMove,
+  onPortUp,
+  onPortCancel,
+}: {
+  person: Person;
+  isDropTarget: boolean;
+  isSelected: boolean;
+  dashed?: boolean;
+  onClick?: () => void;
+  onPointerDown?: (e: React.PointerEvent<SVGGElement>) => void;
+  onPointerMove?: (e: React.PointerEvent<SVGGElement>) => void;
+  onPointerUp?: (e: React.PointerEvent<SVGGElement>) => void;
+  onPointerCancel?: () => void;
+  onPortDown: (port: Port, e: React.PointerEvent<SVGCircleElement>) => void;
+  onPortMove: (e: React.PointerEvent<SVGCircleElement>) => void;
+  onPortUp: (e: React.PointerEvent<SVGCircleElement>) => void;
+  onPortCancel: () => void;
+}) {
+  const ringColor = isDropTarget
+    ? "#3b82f6"
+    : isSelected
+      ? "#292524"
+      : person.user_id
+        ? "#86efac"
+        : "#9ca3af";
+  const cx = NODE_WIDTH / 2;
+  const cr = AVATAR_SIZE / 2;
+  const clipId = `avatar-clip-${person.id}`;
+  const ports: { port: Port; x: number; y: number }[] = [
+    { port: "parent", x: cx, y: 0 },
+    { port: "child", x: cx, y: AVATAR_SIZE },
+    { port: "spouse", x: NODE_WIDTH, y: cr },
+  ];
+
+  return (
+    <g
+      onClick={onClick}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      className="cursor-pointer touch-none"
+    >
+      {person.photo_url ? (
+        <>
+          <clipPath id={clipId}>
+            <circle cx={cx} cy={cr} r={cr} />
+          </clipPath>
+          <image
+            href={person.photo_url}
+            x={cx - cr}
+            y={0}
+            width={AVATAR_SIZE}
+            height={AVATAR_SIZE}
+            preserveAspectRatio="xMidYMid slice"
+            clipPath={`url(#${clipId})`}
+          />
+        </>
+      ) : (
+        <>
+          <circle cx={cx} cy={cr} r={cr} fill="#e7e5e4" />
+          <text
+            x={cx}
+            y={cr}
+            textAnchor="middle"
+            dominantBaseline="central"
+            fontSize={AVATAR_SIZE * 0.34}
+            fontWeight={600}
+            fill="#78716c"
+          >
+            {initials(person.full_name)}
+          </text>
+        </>
+      )}
+      <circle
+        cx={cx}
+        cy={cr}
+        r={cr}
+        fill="none"
+        stroke={ringColor}
+        strokeWidth={isDropTarget || isSelected ? 3 : 2}
+        strokeDasharray={dashed ? "4 3" : undefined}
+      />
+      <text
+        x={cx}
+        y={AVATAR_SIZE + 16}
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fontSize={13}
+        fontWeight={600}
+        fill="#1c1917"
+      >
+        {truncate(person.full_name, 16)}
+      </text>
+      {person.birth_date && (
+        <text
+          x={cx}
+          y={AVATAR_SIZE + 32}
+          textAnchor="middle"
+          dominantBaseline="middle"
+          fontSize={10}
+          fill="#57534e"
+        >
+          b. {person.birth_date.slice(0, 4)}
+        </text>
+      )}
+      {ports.map(({ port, x, y }) => (
+        <circle
+          key={port}
+          cx={x}
+          cy={y}
+          r={PORT_RADIUS}
+          fill="#ffffff"
+          stroke="#78716c"
+          strokeWidth={1.5}
+          className="cursor-crosshair touch-none"
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => onPortDown(port, e)}
+          onPointerMove={onPortMove}
+          onPointerUp={onPortUp}
+          onPointerCancel={onPortCancel}
+        />
+      ))}
+    </g>
+  );
+}
+
+// Portrait (3:4) photo card used for the unconnected-members drawer.
+// Pointer handlers drive the same drag-to-place/drag-to-connect flow as
+// on-canvas nodes.
+function PersonTile({
+  person,
+  dashed,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
+}: {
+  person: Person;
+  dashed?: boolean;
+  onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerMove: (e: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerUp: (e: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerCancel: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      style={{ aspectRatio: "3 / 4" }}
+      className={`flex w-full touch-none flex-col items-center justify-center gap-1.5 overflow-hidden rounded-lg border bg-white p-2 active:bg-stone-50 ${
+        dashed ? "border-dashed border-stone-300" : "border-stone-200"
+      }`}
+    >
+      <div className="aspect-square w-4/5 min-h-0 shrink overflow-hidden rounded-full bg-stone-100">
+        {person.photo_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={person.photo_url} alt="" className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-lg font-semibold text-stone-500">
+            {initials(person.full_name)}
+          </div>
+        )}
+      </div>
+      <div className="w-full shrink-0 text-center">
+        <p className="truncate text-sm font-medium text-stone-900">{person.full_name}</p>
+        {person.birth_date && <p className="text-xs text-stone-600">b. {person.birth_date.slice(0, 4)}</p>}
+      </div>
+    </button>
   );
 }
 

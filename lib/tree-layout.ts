@@ -7,6 +7,7 @@ export type LayoutNode = {
 };
 
 export type LayoutEdge = {
+  id: string;
   type: "parent" | "spouse";
   from: string;
   to: string;
@@ -26,8 +27,21 @@ export const NODE_HEIGHT = AVATAR_SIZE + 8 + 32;
 const X_GAP = 40;
 const Y_GAP = 120;
 
+// Freeform (placed-but-unconnected) nodes snap to a grid the same size as a
+// pedigree node's footprint plus a little breathing room, so dropped or
+// dragged people line up cleanly instead of landing at arbitrary pixels.
+export const GRID_CELL_WIDTH = NODE_WIDTH + 24;
+export const GRID_CELL_HEIGHT = NODE_HEIGHT + 24;
+
+export function snapToGrid(x: number, y: number): { x: number; y: number } {
+  return {
+    x: Math.round(x / GRID_CELL_WIDTH) * GRID_CELL_WIDTH,
+    y: Math.round(y / GRID_CELL_HEIGHT) * GRID_CELL_HEIGHT,
+  };
+}
+
 // Ids of persons that appear in at least one relationship row.
-function getConnectedIds(persons: Person[], relationships: Relationship[]): Set<string> {
+export function getConnectedIds(persons: Person[], relationships: Relationship[]): Set<string> {
   const ids = new Set(persons.map((p) => p.id));
   const connected = new Set<string>();
   for (const r of relationships) {
@@ -39,11 +53,18 @@ function getConnectedIds(persons: Person[], relationships: Relationship[]): Set<
   return connected;
 }
 
-// Persons with no relationship rows at all — not yet placed in the tree.
-// Shown in the unconnected-members drawer instead of the canvas.
+// Persons with no relationship rows and not yet dropped onto the canvas.
+// Shown in the unconnected-members drawer.
 export function getUnconnectedPersons(persons: Person[], relationships: Relationship[]): Person[] {
   const connectedIds = getConnectedIds(persons, relationships);
-  return persons.filter((p) => !connectedIds.has(p.id));
+  return persons.filter((p) => !connectedIds.has(p.id) && !p.placed);
+}
+
+// Persons dropped onto the canvas (via the drawer) but not yet connected to
+// anyone — shown in a grid on the canvas instead of the drawer.
+export function getPlacedUnconnected(persons: Person[], relationships: Relationship[]): Person[] {
+  const connectedIds = getConnectedIds(persons, relationships);
+  return persons.filter((p) => !connectedIds.has(p.id) && p.placed);
 }
 
 /**
@@ -181,8 +202,8 @@ export function computeLayout(
   }
 
   const edges: LayoutEdge[] = [
-    ...spouseEdges.map((e) => ({ type: "spouse" as const, from: e.person_id, to: e.related_person_id })),
-    ...parentEdges.map((e) => ({ type: "parent" as const, from: e.related_person_id, to: e.person_id })),
+    ...spouseEdges.map((e) => ({ id: e.id, type: "spouse" as const, from: e.person_id, to: e.related_person_id })),
+    ...parentEdges.map((e) => ({ id: e.id, type: "parent" as const, from: e.related_person_id, to: e.person_id })),
   ];
 
   const xs = nodes.map((n) => n.x);

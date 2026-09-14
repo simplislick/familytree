@@ -29,7 +29,15 @@ export async function updateSession(request: NextRequest) {
 
   // Refresh the session; do not run code between createServerClient and
   // getUser(), per @supabase/ssr guidance.
-  await supabase.auth.getUser();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  // No sign-in flow in this app: every visitor gets a silent anonymous
+  // session so ownership/claim features keep working without a login screen.
+  if (!user) {
+    await supabase.auth.signInAnonymously();
+  }
 
   return response;
 }

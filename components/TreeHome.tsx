@@ -51,7 +51,6 @@ export default function TreeHome({
         {isOwner && (
           <AddRelativeForm
             token={token}
-            persons={persons}
             open={addOpen}
             onOpenChange={setAddOpen}
           />

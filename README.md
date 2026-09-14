@@ -1,14 +1,16 @@
 # Family Tree Platform (MVP)
 
 Mobile-first web app for building shareable family trees. Create a tree, share
-one link, and family members join by email magic link or phone OTP — matching
-an existing placeholder profile (claim) or positioning themselves manually.
-The tree owner gets notified and can move or remove anyone.
+one link, and family members join by entering their name (and optionally
+email/phone, used only for matching) — matching an existing placeholder
+profile (claim) or positioning themselves manually. The tree owner gets
+notified and can move or remove anyone. There is no sign-in screen: every
+visitor gets a silent anonymous Supabase session on first load.
 
 ## Stack
 
 - Next.js 15 (App Router) + TypeScript + Tailwind CSS
-- Supabase: Postgres (RLS) + Auth (email magic link, phone OTP)
+- Supabase: Postgres (RLS) + Auth (silent anonymous sessions, no login UI)
 - No graph library: the tree is a custom SVG pedigree (`components/TreeCanvas.tsx`,
   layout in `lib/tree-layout.ts`)
 
@@ -27,14 +29,11 @@ The tree owner gets notified and can move or remove anyone.
 3. Copy `.env.example` to `.env.local` and fill in
    `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    (Project Settings → Data API / API Keys).
-4. Enable auth providers in Supabase:
-   - **Email** works out of the box (magic link). Add
-     `http://localhost:3000/auth/callback` to the allowed redirect URLs.
-   - **Phone OTP** requires an SMS provider (e.g. Twilio) configured under
-     Authentication → Providers → Phone. Until then, use email.
-5. (Optional) Seed a demo tree: sign up once in the app, then run
-   `scripts/seed.sql` in the SQL editor. The demo tree lives at
-   `/t/demo-share-token` and includes claimable placeholders
+4. Enable **Anonymous sign-ins** in Supabase under Authentication → Providers
+   — every visitor gets a session automatically, with no login UI.
+5. (Optional) Seed a demo tree: load the app once so an anonymous session
+   exists, then run `scripts/seed.sql` in the SQL editor. The demo tree lives
+   at `/t/demo-share-token` and includes claimable placeholders
    (`grandma@example.com`, `+1 555 123 4567`).
 6. Run:
 
@@ -48,11 +47,11 @@ notice), so `npm run build` works before a project exists.
 
 ## Core flows
 
-1. **Create tree:** sign in with your email → name the tree → get a shareable
-   `/t/[token]` link with a copy button.
-2. **Join via link:** enter name, birth date, and choose email (magic link) or
-   phone (OTP). After verification, `claim_or_create_person` (a single
-   transactional Postgres function) matches on exact email or normalized phone:
+1. **Create tree:** name the tree → get a shareable `/t/[token]` link with a
+   copy button. No sign-in step — the landing page is the starting point.
+2. **Join via link:** enter name, birth date, and optionally email/phone.
+   `claim_or_create_person` (a single transactional Postgres function) matches
+   on exact email or normalized phone:
    - placeholder match → claimed, land on the tree view
    - existing account match → attached
    - no match → manual self-positioning ("I'm the child/spouse/parent of …")
@@ -78,4 +77,3 @@ merge-duplicate UI (owner "remove" covers it).
 ## Deploy
 
 Target is Vercel: push the repo, import it, and set the two env vars above.
-Add your production `/auth/callback` URL to Supabase's allowed redirect URLs.
