@@ -56,7 +56,8 @@ return `null` when these are unset, and **every caller must handle null**.
 
 Schema lives in numbered migrations under `supabase/migrations/`
 (`0001_init.sql` = tables/RLS/RPCs, `0002` = photos + storage bucket,
-`0003`/`0004` = placed-person canvas columns). Apply with the Supabase CLI
+`0003`/`0004` = placed-person canvas columns, `0005` = lets members read the
+trees they belong to, not just owners). Apply with the Supabase CLI
 (`supabase link --project-ref <ref>` then `supabase db push`) or by pasting
 into the SQL editor. `scripts/seed.sql` seeds a demo tree (requires an
 existing user) and is run manually in the SQL editor.

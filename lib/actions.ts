@@ -62,6 +62,101 @@ export async function renameTree(token: string, name: string): Promise<ActionRes
   if (error) return { ok: false, message: error.message };
 
   revalidatePath(`/t/${token}`);
+  revalidatePath("/");
+  return { ok: true };
+}
+
+/** Owner permanently deletes their tree; persons/relationships/notifications cascade-delete. */
+export async function deleteTree(token: string): Promise<ActionResult> {
+  const { supabase, user } = await getAuthedClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+  if (!user) return { ok: false, message: "Not signed in." };
+
+  const tree = await getTreeByToken(supabase, token);
+  if (!tree) return { ok: false, message: "Tree not found." };
+  if (tree.owner_id !== user.id) return { ok: false, message: "Only the owner can delete the tree." };
+
+  const { error } = await supabase.from("trees").delete().eq("id", tree.id);
+  if (error) return { ok: false, message: error.message };
+
+  revalidatePath("/");
+  return { ok: true };
+}
+
+/**
+ * Owner duplicates their tree: a full copy of the tree, its people, and
+ * their connections under a new share token. Placeholder persons (and the
+ * caller's own claimed person, if any) copy over as-is; persons claimed by
+ * other accounts are copied as unclaimed placeholders, since RLS only lets
+ * a person row be inserted for the caller's own user_id or as null.
+ */
+export async function duplicateTree(token: string): Promise<ActionResult> {
+  const { supabase, user } = await getAuthedClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+  if (!user) return { ok: false, message: "Not signed in." };
+
+  const tree = await getTreeByToken(supabase, token);
+  if (!tree) return { ok: false, message: "Tree not found." };
+  if (tree.owner_id !== user.id) return { ok: false, message: "Only the owner can duplicate the tree." };
+
+  const [{ data: persons }, { data: relationships }] = await Promise.all([
+    supabase.from("persons").select("*").eq("tree_id", tree.id),
+    supabase.from("relationships").select("*").eq("tree_id", tree.id),
+  ]);
+
+  const { data: newTree, error: treeError } = await supabase
+    .from("trees")
+    .insert({ name: `${tree.name} (copy)`, owner_id: user.id, share_token: nanoid(10) })
+    .select("id")
+    .single();
+  if (treeError || !newTree) {
+    return { ok: false, message: treeError?.message ?? "Could not duplicate the tree." };
+  }
+
+  const idMap = new Map<string, string>();
+  const newPersons = (persons ?? []).map((p) => {
+    const newId = crypto.randomUUID();
+    idMap.set(p.id, newId);
+    return {
+      id: newId,
+      tree_id: newTree.id,
+      user_id: p.user_id === user.id ? user.id : null,
+      full_name: p.full_name,
+      birth_date: p.birth_date,
+      photo_url: p.photo_url,
+      email: p.email,
+      phone: p.phone,
+      placed: p.placed,
+      position_x: p.position_x,
+      position_y: p.position_y,
+      created_by: user.id,
+    };
+  });
+
+  if (newPersons.length > 0) {
+    const { error: personsError } = await supabase.from("persons").insert(newPersons);
+    if (personsError) return { ok: false, message: personsError.message };
+  }
+
+  const newRelationships = (relationships ?? [])
+    .map((r) => ({
+      tree_id: newTree.id,
+      person_id: idMap.get(r.person_id),
+      related_person_id: idMap.get(r.related_person_id),
+      type: r.type,
+      created_by: user.id,
+    }))
+    .filter(
+      (r): r is { tree_id: string; person_id: string; related_person_id: string; type: RelationType; created_by: string } =>
+        !!r.person_id && !!r.related_person_id,
+    );
+
+  if (newRelationships.length > 0) {
+    const { error: relError } = await supabase.from("relationships").insert(newRelationships);
+    if (relError) return { ok: false, message: relError.message };
+  }
+
+  revalidatePath("/");
   return { ok: true };
 }
 
