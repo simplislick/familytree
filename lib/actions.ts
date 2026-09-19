@@ -226,10 +226,12 @@ export async function addRelative(input: {
   anchorPersonId: string | null;
   relation: JoinRelation | null;
   fullName: string;
+  chineseName: string | null;
   birthDate: string | null;
   photoUrl: string | null;
   email: string | null;
   phone: string | null;
+  gender: "male" | "female" | null;
 }): Promise<ActionResult> {
   const { supabase, user } = await getAuthedClient();
   if (!supabase) return { ok: false, message: "Supabase is not configured." };
@@ -248,10 +250,12 @@ export async function addRelative(input: {
       tree_id: tree.id,
       user_id: null,
       full_name: fullName,
+      chinese_name: input.chineseName?.trim() || null,
       birth_date: input.birthDate,
       photo_url: input.photoUrl,
       email: input.email?.trim() || null,
       phone: input.phone?.trim() || null,
+      gender: input.gender,
       created_by: user.id,
     })
     .select("id")
@@ -407,6 +411,35 @@ export async function movePerson(input: {
   return { ok: true };
 }
 
+/**
+ * Owner reorders people within a group in the list view. `personIds` is the
+ * full new order for that group; each person's `list_order` becomes its
+ * index so the order persists and is shared across everyone viewing the tree.
+ */
+export async function reorderPersons(input: {
+  token: string;
+  personIds: string[];
+}): Promise<ActionResult> {
+  const { supabase, user } = await getAuthedClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+  if (!user) return { ok: false, message: "Not signed in." };
+
+  const tree = await getTreeByToken(supabase, input.token);
+  if (!tree) return { ok: false, message: "Tree not found." };
+  if (tree.owner_id !== user.id) return { ok: false, message: "Only the owner can reorder people." };
+
+  const results = await Promise.all(
+    input.personIds.map((id, index) =>
+      supabase.from("persons").update({ list_order: index }).eq("id", id).eq("tree_id", tree.id),
+    ),
+  );
+  const failed = results.find((r) => r.error);
+  if (failed?.error) return { ok: false, message: failed.error.message };
+
+  revalidatePath(`/t/${input.token}`);
+  return { ok: true };
+}
+
 /** Owner removes a person; their relationship edges cascade-delete. */
 export async function removePerson(input: {
   token: string;
@@ -423,6 +456,58 @@ export async function removePerson(input: {
   const { error } = await supabase
     .from("persons")
     .delete()
+    .eq("id", input.personId)
+    .eq("tree_id", tree.id);
+  if (error) return { ok: false, message: error.message };
+
+  revalidatePath(`/t/${input.token}`);
+  return { ok: true };
+}
+
+/** Owner or the person themself edits a person's details. */
+export async function updatePerson(input: {
+  token: string;
+  personId: string;
+  fullName: string;
+  chineseName: string | null;
+  birthDate: string | null;
+  photoUrl: string | null;
+  email: string | null;
+  phone: string | null;
+  gender: "male" | "female" | null;
+}): Promise<ActionResult> {
+  const { supabase, user } = await getAuthedClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+  if (!user) return { ok: false, message: "Not signed in." };
+
+  const tree = await getTreeByToken(supabase, input.token);
+  if (!tree) return { ok: false, message: "Tree not found." };
+
+  const { data: person } = await supabase
+    .from("persons")
+    .select("user_id")
+    .eq("id", input.personId)
+    .eq("tree_id", tree.id)
+    .maybeSingle();
+  if (!person) return { ok: false, message: "Person not found." };
+  if (tree.owner_id !== user.id && person.user_id !== user.id) {
+    return { ok: false, message: "You can only edit your own details." };
+  }
+
+  const fullName = input.fullName.trim();
+  if (!fullName) return { ok: false, message: "Please enter a name." };
+
+  const { error } = await supabase
+    .from("persons")
+    .update({
+      full_name: fullName,
+      chinese_name: input.chineseName?.trim() || null,
+      birth_date: input.birthDate,
+      photo_url: input.photoUrl,
+      email: input.email?.trim() || null,
+      phone: input.phone?.trim() || null,
+      gender: input.gender,
+    })
     .eq("id", input.personId)
     .eq("tree_id", tree.id);
   if (error) return { ok: false, message: error.message };
@@ -463,6 +548,19 @@ export async function updatePersonPhoto(input: {
   if (error) return { ok: false, message: error.message };
 
   revalidatePath(`/t/${input.token}`);
+  return { ok: true };
+}
+
+/** Sets the signed-in account's settings-page avatar (separate from any per-tree person photo). */
+export async function updateProfilePhoto(photoUrl: string | null): Promise<ActionResult> {
+  const { supabase, user } = await getAuthedClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+  if (!user) return { ok: false, message: "Not signed in." };
+
+  const { error } = await supabase.from("profiles").upsert({ id: user.id, avatar_url: photoUrl });
+  if (error) return { ok: false, message: error.message };
+
+  revalidatePath("/");
   return { ok: true };
 }
 

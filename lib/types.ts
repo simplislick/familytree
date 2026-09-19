@@ -11,10 +11,15 @@ export type Person = {
   tree_id: string;
   user_id: string | null; // null = unclaimed placeholder
   full_name: string;
+  chinese_name: string | null;
   birth_date: string | null;
   photo_url: string | null;
   email: string | null;
   phone: string | null;
+  gender: "male" | "female" | null;
+  // Manual sort position within its generation group in the list view; null
+  // means "unordered" and falls back to alphabetical.
+  list_order: number | null;
   // Dropped onto the tree canvas but not yet connected to anyone — rendered
   // freeform at (position_x, position_y) instead of sitting in the drawer.
   placed: boolean;
@@ -48,3 +53,10 @@ export type Notification = {
 
 // Relation chosen in PositionPicker: how the joiner relates to an anchor person.
 export type JoinRelation = "child" | "spouse" | "parent";
+
+// Per-account settings, independent of any tree membership.
+export type Profile = {
+  id: string;
+  avatar_url: string | null;
+  created_at: string;
+};

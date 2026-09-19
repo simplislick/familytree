@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   computeLayout,
@@ -13,8 +13,9 @@ import {
   type LayoutEdge,
   type LayoutNode,
 } from "@/lib/tree-layout";
-import { connectPersons, disconnectPersons, movePerson, placePerson } from "@/lib/actions";
-import PersonAvatar from "./PersonAvatar";
+import { disconnectPersons, movePerson, placePerson } from "@/lib/actions";
+import AddRelativeForm from "./AddRelativeForm";
+import PersonAvatar, { GENDER_COLORS } from "./PersonAvatar";
 import PersonCard from "./PersonCard";
 import type { JoinRelation, Person, RelationType, Relationship } from "@/lib/types";
 
@@ -22,7 +23,6 @@ const MIN_SCALE = 0.3;
 const MAX_SCALE = 2.5;
 const TAP_TOLERANCE_PX = 6;
 const HANDLE_WIDTH = 28;
-const PORT_RADIUS = 7;
 
 const RELATION_LABELS: Record<JoinRelation, string> = {
   child: "Child of",
@@ -30,39 +30,20 @@ const RELATION_LABELS: Record<JoinRelation, string> = {
   parent: "Parent of",
 };
 
-// The three connection points every node exposes, ComfyUI-style: "parent"
-// (top) accepts a wire from someone above, "child" (bottom) sends a wire to
-// someone below, "spouse" (right) links a partner. Which port a wire starts
-// from decides the relationship's direction.
-type Port = "parent" | "child" | "spouse";
-
 type View = { x: number; y: number; scale: number };
 type Drag = { personId: string; name: string; photoUrl: string | null; x: number; y: number };
 type ConnectPrompt = { personId: string; personName: string; anchorId: string; anchorName: string };
-type WireDrag = { fromId: string; port: Port; originX: number; originY: number; x: number; y: number };
 type DisconnectPrompt = { relationshipId: string; aName: string; bName: string; type: RelationType };
 type Point = { id: string; x: number; y: number };
 
-function portPosition(nodeX: number, nodeY: number, port: Port): { x: number; y: number } {
-  switch (port) {
-    case "parent":
-      return { x: nodeX + NODE_WIDTH / 2, y: nodeY };
-    case "child":
-      return { x: nodeX + NODE_WIDTH / 2, y: nodeY + AVATAR_SIZE };
-    case "spouse":
-      return { x: nodeX + NODE_WIDTH, y: nodeY + AVATAR_SIZE / 2 };
-  }
-}
-
-// ComfyUI-style node canvas: pan by dragging, zoom with the scroll wheel or
-// pinch, tap a person for their details card. Connected people are laid out
-// automatically as a pedigree; a left-side drawer holds everyone else — drag
-// one straight onto the canvas to drop them at a grid-snapped spot (they stay
-// draggable from there), or onto an existing node to connect them for the
-// first time. Every node also exposes small connection points (parent/child/
-// spouse) — drag a wire from one to another node to add a relationship
-// without disturbing that person's other connections, and click an existing
-// wire to remove it.
+// Radial node canvas: pan by dragging, zoom with the scroll wheel or pinch,
+// tap a person for their details card. Connected people are laid out
+// automatically as a circular pedigree; a left-side drawer holds everyone
+// else — drag one straight onto the canvas to drop them at a grid-snapped
+// spot (they stay draggable from there), or onto an existing node to connect
+// them for the first time. Click an existing connector line to remove that
+// relationship; adding relationships happens in a person's details card
+// (the Family section).
 export default function TreeCanvas({
   token,
   persons,
@@ -86,22 +67,44 @@ export default function TreeCanvas({
   );
   const [view, setView] = useState<View>({ x: 24, y: 24, scale: 1 });
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editingPersonId, setEditingPersonId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [hoverTargetId, setHoverTargetId] = useState<string | null>(null);
   const [hoverEdgeId, setHoverEdgeId] = useState<string | null>(null);
   const [connectPrompt, setConnectPrompt] = useState<ConnectPrompt | null>(null);
   const [connectError, setConnectError] = useState("");
-  const [wireDrag, setWireDrag] = useState<WireDrag | null>(null);
-  const [wireError, setWireError] = useState("");
   const [disconnectPrompt, setDisconnectPrompt] = useState<DisconnectPrompt | null>(null);
   const [disconnectError, setDisconnectError] = useState("");
   const [isConnecting, startConnecting] = useTransition();
-  const [isWiring, startWiring] = useTransition();
   const [isDisconnecting, startDisconnecting] = useTransition();
   const [, startPlacing] = useTransition();
 
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Fit the whole radial tree in the viewport once on mount — the circle's
+  // center is nowhere near (0, 0), so the default view would show a corner.
+  const didFitView = useRef(false);
+  useEffect(() => {
+    if (didFitView.current) return;
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect || layout.width === 0 || layout.height === 0) return;
+    const margin = 48;
+    const scale = Math.min(
+      MAX_SCALE,
+      Math.max(
+        MIN_SCALE,
+        Math.min((rect.width - margin) / layout.width, (rect.height - margin) / layout.height, 1),
+      ),
+    );
+    setView({
+      scale,
+      x: (rect.width - layout.width * scale) / 2,
+      y: (rect.height - layout.height * scale) / 2,
+    });
+    didFitView.current = true;
+  }, [layout]);
+
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const pinchDistance = useRef<number | null>(null);
   const tapStart = useRef<{ x: number; y: number } | null>(null);
@@ -338,75 +341,6 @@ export default function TreeCanvas({
     });
   }
 
-  // A wire drag starts on one node's connection point; which port it started
-  // from decides the relationship's direction once it's dropped on another
-  // node (dropping on empty canvas cancels it).
-  function handlePortDown(
-    e: React.PointerEvent<SVGCircleElement>,
-    personId: string,
-    port: Port,
-    nodeX: number,
-    nodeY: number,
-  ) {
-    e.stopPropagation();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    const origin = portPosition(nodeX, nodeY, port);
-    setWireError("");
-    setWireDrag({ fromId: personId, port, originX: origin.x, originY: origin.y, x: origin.x, y: origin.y });
-  }
-
-  function handlePortMove(e: React.PointerEvent<SVGCircleElement>) {
-    if (!wireDrag) return;
-    e.stopPropagation();
-    const local = toLocalPoint(e.clientX, e.clientY);
-    if (!local) return;
-    setWireDrag((d) => (d ? { ...d, x: local.x, y: local.y } : d));
-    setHoverTargetId(hitTest(e.clientX, e.clientY, wireDrag.fromId));
-  }
-
-  function handlePortUp(e: React.PointerEvent<SVGCircleElement>) {
-    if (!wireDrag) return;
-    e.stopPropagation();
-    const wire = wireDrag;
-    const targetId = hitTest(e.clientX, e.clientY, wire.fromId);
-    setWireDrag(null);
-    setHoverTargetId(null);
-    if (!targetId) return;
-
-    let personId: string;
-    let relatedPersonId: string;
-    let type: RelationType;
-    if (wire.port === "child") {
-      // Wire ran from fromId's child (output) port: the target becomes fromId's child.
-      personId = targetId;
-      relatedPersonId = wire.fromId;
-      type = "parent";
-    } else if (wire.port === "parent") {
-      // Wire ran from fromId's parent (input) port: the target becomes fromId's parent.
-      personId = wire.fromId;
-      relatedPersonId = targetId;
-      type = "parent";
-    } else {
-      personId = wire.fromId;
-      relatedPersonId = targetId;
-      type = "spouse";
-    }
-
-    startWiring(async () => {
-      const result = await connectPersons({ token, personId, relatedPersonId, type });
-      if (result.ok) {
-        router.refresh();
-      } else {
-        setWireError(result.message);
-      }
-    });
-  }
-
-  function handlePortCancel() {
-    setWireDrag(null);
-    setHoverTargetId(null);
-  }
-
   function handleEdgeClick(e: React.MouseEvent, edge: LayoutEdge) {
     e.stopPropagation();
     const a = personById.get(edge.from);
@@ -431,6 +365,7 @@ export default function TreeCanvas({
   }
 
   const selected = selectedId ? personById.get(selectedId) : undefined;
+  const editingPerson = editingPersonId ? personById.get(editingPersonId) : undefined;
 
   return (
     <div
@@ -476,13 +411,13 @@ export default function TreeCanvas({
                   </g>
                 );
               }
-              // Parent edge: elbow from the parent's avatar bottom to the child's avatar top.
-              const x1 = from.x + NODE_WIDTH / 2;
-              const y1 = from.y + AVATAR_SIZE;
-              const x2 = to.x + NODE_WIDTH / 2;
-              const y2 = to.y;
-              const midY = (y1 + y2) / 2;
-              const d = `M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`;
+              // Parent edge: radial elbow (out from the parent, arc to the
+              // child's angle, out to the child) precomputed by the layout so
+              // the tree reads as a circular dendrogram; straight line as a
+              // defensive fallback if a path wasn't computed.
+              const d =
+                e.path ||
+                `M ${from.x + NODE_WIDTH / 2} ${from.y + AVATAR_SIZE} L ${to.x + NODE_WIDTH / 2} ${to.y}`;
               return (
                 <g
                   key={e.id}
@@ -506,10 +441,6 @@ export default function TreeCanvas({
                     isDropTarget={hoverTargetId === n.id}
                     isSelected={selectedId === n.id}
                     onClick={() => handleNodeClick(n.id)}
-                    onPortDown={(port, e) => handlePortDown(e, n.id, port, n.x, n.y)}
-                    onPortMove={handlePortMove}
-                    onPortUp={handlePortUp}
-                    onPortCancel={handlePortCancel}
                   />
                 </g>
               );
@@ -531,26 +462,10 @@ export default function TreeCanvas({
                       setDrag(null);
                       setHoverTargetId(null);
                     }}
-                    onPortDown={(port, e) => handlePortDown(e, p.id, port, x, y)}
-                    onPortMove={handlePortMove}
-                    onPortUp={handlePortUp}
-                    onPortCancel={handlePortCancel}
                   />
                 </g>
               );
             })}
-            {wireDrag && (
-              <line
-                x1={wireDrag.originX}
-                y1={wireDrag.originY}
-                x2={wireDrag.x}
-                y2={wireDrag.y}
-                stroke="#3b82f6"
-                strokeWidth={2}
-                strokeDasharray="4 3"
-                pointerEvents="none"
-              />
-            )}
           </svg>
         </div>
       </div>
@@ -616,15 +531,6 @@ export default function TreeCanvas({
         >
           <PersonAvatar name={drag.name} photoUrl={drag.photoUrl} size={20} />
           {drag.name}
-        </div>
-      )}
-
-      {(isWiring || wireError) && (
-        <div
-          className="fixed inset-x-0 bottom-4 z-50 mx-auto w-fit cursor-pointer rounded-lg bg-stone-900 px-4 py-2 text-sm text-white shadow-lg"
-          onClick={() => setWireError("")}
-        >
-          {isWiring ? "Connecting…" : wireError}
         </div>
       )}
 
@@ -705,11 +611,31 @@ export default function TreeCanvas({
 
       {selected && (
         <PersonCard
+          key={selected.id}
           token={token}
           person={selected}
           persons={persons}
+          relationships={relationships}
           isOwner={isOwner}
+          onEdit={() => {
+            setSelectedId(null);
+            setEditingPersonId(selected.id);
+          }}
           onClose={() => setSelectedId(null)}
+        />
+      )}
+
+      {editingPerson && (
+        <AddRelativeForm
+          key={editingPerson.id}
+          token={token}
+          person={editingPerson}
+          persons={persons}
+          relationships={relationships}
+          open
+          onOpenChange={(next) => {
+            if (!next) setEditingPersonId(null);
+          }}
         />
       )}
     </div>
@@ -719,8 +645,6 @@ export default function TreeCanvas({
 // Circular avatar + name (+ birth year) below it, used for both pedigree
 // nodes (tap to open, positioned by the layout algorithm) and freeform nodes
 // (tap to open, drag to reposition or connect — pointer handlers passed in).
-// Every node also renders three small connection points (parent/child/
-// spouse); dragging from one starts a wire to another node.
 function AvatarNode({
   person,
   isDropTarget,
@@ -731,10 +655,6 @@ function AvatarNode({
   onPointerMove,
   onPointerUp,
   onPointerCancel,
-  onPortDown,
-  onPortMove,
-  onPortUp,
-  onPortCancel,
 }: {
   person: Person;
   isDropTarget: boolean;
@@ -745,10 +665,6 @@ function AvatarNode({
   onPointerMove?: (e: React.PointerEvent<SVGGElement>) => void;
   onPointerUp?: (e: React.PointerEvent<SVGGElement>) => void;
   onPointerCancel?: () => void;
-  onPortDown: (port: Port, e: React.PointerEvent<SVGCircleElement>) => void;
-  onPortMove: (e: React.PointerEvent<SVGCircleElement>) => void;
-  onPortUp: (e: React.PointerEvent<SVGCircleElement>) => void;
-  onPortCancel: () => void;
 }) {
   const ringColor = isDropTarget
     ? "#3b82f6"
@@ -760,11 +676,6 @@ function AvatarNode({
   const cx = NODE_WIDTH / 2;
   const cr = AVATAR_SIZE / 2;
   const clipId = `avatar-clip-${person.id}`;
-  const ports: { port: Port; x: number; y: number }[] = [
-    { port: "parent", x: cx, y: 0 },
-    { port: "child", x: cx, y: AVATAR_SIZE },
-    { port: "spouse", x: NODE_WIDTH, y: cr },
-  ];
 
   return (
     <g
@@ -792,7 +703,7 @@ function AvatarNode({
         </>
       ) : (
         <>
-          <circle cx={cx} cy={cr} r={cr} fill="#e7e5e4" />
+          <circle cx={cx} cy={cr} r={cr} fill={person.gender ? GENDER_COLORS[person.gender] : "#e7e5e4"} />
           <text
             x={cx}
             y={cr}
@@ -800,7 +711,7 @@ function AvatarNode({
             dominantBaseline="central"
             fontSize={AVATAR_SIZE * 0.34}
             fontWeight={600}
-            fill="#78716c"
+            fill={person.gender ? "#1c1917" : "#78716c"}
           >
             {initials(person.full_name)}
           </text>
@@ -815,6 +726,16 @@ function AvatarNode({
         strokeWidth={isDropTarget || isSelected ? 3 : 2}
         strokeDasharray={dashed ? "4 3" : undefined}
       />
+      {person.gender && (
+        <circle
+          cx={cx}
+          cy={cr}
+          r={cr + 3}
+          fill="none"
+          stroke={GENDER_COLORS[person.gender]}
+          strokeWidth={3}
+        />
+      )}
       <text
         x={cx}
         y={AVATAR_SIZE + 16}
@@ -838,23 +759,6 @@ function AvatarNode({
           b. {person.birth_date.slice(0, 4)}
         </text>
       )}
-      {ports.map(({ port, x, y }) => (
-        <circle
-          key={port}
-          cx={x}
-          cy={y}
-          r={PORT_RADIUS}
-          fill="#ffffff"
-          stroke="#78716c"
-          strokeWidth={1.5}
-          className="cursor-crosshair touch-none"
-          onClick={(e) => e.stopPropagation()}
-          onPointerDown={(e) => onPortDown(port, e)}
-          onPointerMove={onPortMove}
-          onPointerUp={onPortUp}
-          onPointerCancel={onPortCancel}
-        />
-      ))}
     </g>
   );
 }
@@ -889,12 +793,24 @@ function PersonTile({
         dashed ? "border-dashed border-stone-300" : "border-stone-200"
       }`}
     >
-      <div className="aspect-square w-4/5 min-h-0 shrink overflow-hidden rounded-full bg-stone-100">
+      <div
+        style={{
+          backgroundColor: !person.photo_url && person.gender ? GENDER_COLORS[person.gender] : undefined,
+          boxShadow: person.photo_url && person.gender ? `0 0 0 3px ${GENDER_COLORS[person.gender]}` : undefined,
+        }}
+        className={`aspect-square w-4/5 min-h-0 shrink overflow-hidden rounded-full ${
+          person.gender ? "" : "bg-stone-100"
+        }`}
+      >
         {person.photo_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={person.photo_url} alt="" className="h-full w-full object-cover" />
         ) : (
-          <div className="flex h-full w-full items-center justify-center text-lg font-semibold text-stone-500">
+          <div
+            className={`flex h-full w-full items-center justify-center text-lg font-semibold ${
+              person.gender ? "text-stone-900" : "text-stone-500"
+            }`}
+          >
             {initials(person.full_name)}
           </div>
         )}
