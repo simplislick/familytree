@@ -11,6 +11,18 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  /* Selection banner in the list view slides down from the top. */
+  --animate-drop-down: drop-down 180ms ease-out;
+  @keyframes drop-down {
+    from {
+      opacity: 0;
+      transform: translateY(-120%);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
 }
 
 body {

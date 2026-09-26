@@ -221,11 +221,14 @@ export async function positionSelf(input: {
  * Owner adds a relative. If an anchor person + relation are given, the new
  * person is linked to them; otherwise the person is created unconnected
  * (shown in its own section of the tree until the owner moves them in).
+ * `parentIds` additionally links the new person as a child of each given
+ * person (e.g. both parents of a list-view branch).
  */
 export async function addRelative(input: {
   token: string;
   anchorPersonId: string | null;
   relation: JoinRelation | null;
+  parentIds?: string[];
   fullName: string;
   chineseName: string | null;
   birthDate: string | null;
@@ -273,6 +276,17 @@ export async function addRelative(input: {
       created_by: user.id,
     });
     if (relError) return { ok: false, message: relError.message };
+  }
+
+  if (input.parentIds?.length) {
+    const { error: parentError } = await supabase.from("relationships").insert(
+      input.parentIds.map((parentId) => ({
+        tree_id: tree.id,
+        ...relationshipFor("child", person.id, parentId),
+        created_by: user.id,
+      })),
+    );
+    if (parentError) return { ok: false, message: parentError.message };
   }
 
   revalidatePath(`/t/${input.token}`);
@@ -436,6 +450,63 @@ export async function reorderPersons(input: {
   );
   const failed = results.find((r) => r.error);
   if (failed?.error) return { ok: false, message: failed.error.message };
+
+  revalidatePath(`/t/${input.token}`);
+  return { ok: true };
+}
+
+/**
+ * Owner opens a list-view branch for two people in the same generation. A
+ * branch for the same pair (in either order) already existing is treated as
+ * success, since the UI only needs it to be there.
+ */
+export async function createBranch(input: {
+  token: string;
+  parentIds: [string, string];
+}): Promise<ActionResult> {
+  const { supabase, user } = await getAuthedClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+  if (!user) return { ok: false, message: "Not signed in." };
+
+  const tree = await getTreeByToken(supabase, input.token);
+  if (!tree) return { ok: false, message: "Tree not found." };
+  if (tree.owner_id !== user.id) return { ok: false, message: "Only the owner can create branches." };
+
+  const [a, b] = input.parentIds;
+  if (a === b) return { ok: false, message: "A branch needs two different people." };
+
+  const { error } = await supabase.from("branches").insert({
+    tree_id: tree.id,
+    parent_a_id: a,
+    parent_b_id: b,
+    created_by: user.id,
+  });
+  // 23505 = unique violation: this pair already has a branch.
+  if (error && error.code !== "23505") return { ok: false, message: error.message };
+
+  revalidatePath(`/t/${input.token}`);
+  return { ok: true };
+}
+
+/** Owner closes a list-view branch. The children's parent edges stay. */
+export async function deleteBranch(input: {
+  token: string;
+  branchId: string;
+}): Promise<ActionResult> {
+  const { supabase, user } = await getAuthedClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+  if (!user) return { ok: false, message: "Not signed in." };
+
+  const tree = await getTreeByToken(supabase, input.token);
+  if (!tree) return { ok: false, message: "Tree not found." };
+  if (tree.owner_id !== user.id) return { ok: false, message: "Only the owner can remove branches." };
+
+  const { error } = await supabase
+    .from("branches")
+    .delete()
+    .eq("id", input.branchId)
+    .eq("tree_id", tree.id);
+  if (error) return { ok: false, message: error.message };
 
   revalidatePath(`/t/${input.token}`);
   return { ok: true };

@@ -21,12 +21,15 @@ function splitName(fullName: string): [string, string, string] {
 // to reuse the same form to edit an existing entry's details instead.
 // Renders as an overlay; pass `open`/`onOpenChange` to drive it externally
 // (e.g. from a navbar "+" or a list row's edit icon), or omit them to use
-// the built-in "+ Add a relative" trigger (add mode only).
+// the built-in "+ Add a relative" trigger (add mode only). In add mode,
+// `parentIds` links the new person as a child of each of those people (used
+// by a list-view branch's "Add contact").
 export default function AddRelativeForm({
   token,
   person,
   persons = [],
   relationships = [],
+  parentIds,
   open: openProp,
   onOpenChange,
 }: {
@@ -35,6 +38,7 @@ export default function AddRelativeForm({
   // Everyone in the tree + its relationship edges, for the partner selector.
   persons?: Person[];
   relationships?: Relationship[];
+  parentIds?: string[];
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
@@ -133,6 +137,7 @@ export default function AddRelativeForm({
             // A chosen partner links the new person in right away.
             anchorPersonId: spouseId || null,
             relation: spouseId ? "spouse" : null,
+            parentIds,
             fullName,
             chineseName: chineseName || null,
             birthDate: birthDate || null,
@@ -250,6 +255,16 @@ export default function AddRelativeForm({
             </button>
           </div>
         </div>
+        {!isEditing && parentIds?.length ? (
+          <p className="text-xs text-stone-600">
+            Will be added as a child of{" "}
+            {parentIds
+              .map((id) => persons.find((p) => p.id === id)?.full_name)
+              .filter(Boolean)
+              .join(" & ")}
+            .
+          </p>
+        ) : null}
         <div className="flex justify-center">
           <div
             className="relative rounded-full transition-shadow"

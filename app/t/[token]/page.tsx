@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import TreeHome from "@/components/TreeHome";
 import SetupNotice from "@/components/SetupNotice";
-import type { Person, Relationship, Tree } from "@/lib/types";
+import type { Branch, Person, Relationship, Tree } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +37,17 @@ export default async function TreeEntryPage({
   const persons = (row?.persons ?? []) as Person[];
   const relationships = (row?.relationships ?? []) as Relationship[];
 
+  // Branches are an owner-only list-view tool; RLS limits reads to the owner.
+  let branches: Branch[] = [];
+  if (isOwner) {
+    const { data: branchRows } = await supabase
+      .from("branches")
+      .select("*")
+      .eq("tree_id", tree.id)
+      .order("created_at");
+    branches = (branchRows ?? []) as Branch[];
+  }
+
   return (
     <TreeHome
       token={token}
@@ -45,6 +56,7 @@ export default async function TreeEntryPage({
       isOwner={isOwner}
       persons={persons}
       relationships={relationships}
+      branches={branches}
     />
   );
 }

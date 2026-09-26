@@ -1,4 +1,4 @@
-import type { Person, Relationship } from "./types";
+import type { Branch as StoredBranch, Person, Relationship } from "./types";
 
 export type LayoutNode = {
   id: string;
@@ -84,6 +84,100 @@ export function sortPersonsForList(persons: Person[]): Person[] {
     if (ao !== bo) return ao - bo;
     return a.full_name.localeCompare(b.full_name, undefined, { sensitivity: "base" });
   });
+}
+
+// A branch: two people from one generation, turned into the home of their
+// children. It renders in the *next* generation's section of the list view,
+// holding the couple's sons and daughters. The pair is saved in the
+// `branches` table; this is the render-ready form, with its section and
+// label derived from current data.
+export type ListBranch = { id: string; childGroupLabel: string; label: string; parentIds: [string, string] };
+
+// One <ul> of rows inside a list-view generation section: either a branch's
+// children or the section's remaining people (e.g. spouses who married in).
+// `key` is also the list view's reorder/list-ref key.
+export type ListRowList = { key: string; branch?: ListBranch; persons: Person[] };
+
+export type ListSection = { label: string; lists: ListRowList[] };
+
+// "Generation N" sorts by N; "Not yet connected" goes last.
+export function groupRank(label: string): number {
+  const n = Number(label.replace("Generation ", ""));
+  return Number.isFinite(n) ? n : Infinity;
+}
+
+// The list view's structure: people grouped by generation, each generation
+// split into one list per branch (the children of both of its parents) and
+// then everyone else, ordered within each list by `sortPersonsForList`.
+// Unconnected people trail in "Not yet connected". A branch whose
+// children's generation has nobody in it yet still gets its (otherwise
+// empty) section. The radial graph is laid out from this same structure, so
+// the list view is the single source of truth for the tree's arrangement.
+export function buildListSections(
+  persons: Person[],
+  relationships: Relationship[],
+  storedBranches: StoredBranch[],
+): { sections: ListSection[]; branches: ListBranch[]; depths: Map<string, number> } {
+  const depths = getGenerationDepths(persons, relationships);
+
+  const byDepth = new Map<number, Person[]>();
+  for (const p of persons) {
+    const d = depths.get(p.id);
+    if (d === undefined) continue;
+    byDepth.set(d, [...(byDepth.get(d) ?? []), p]);
+  }
+  const byLabel = new Map<string, Person[]>();
+  for (const [d, people] of [...byDepth.entries()].sort(([a], [b]) => a - b)) {
+    byLabel.set(`Generation ${d + 1}`, sortPersonsForList(people));
+  }
+  const unconnected = [
+    ...getUnconnectedPersons(persons, relationships),
+    ...getPlacedUnconnected(persons, relationships),
+  ];
+  if (unconnected.length > 0) byLabel.set("Not yet connected", sortPersonsForList(unconnected));
+
+  // Saved branches, each placed in the generation below its parents (a
+  // parent pair with no depth yet — not connected to anyone — counts as a
+  // root couple).
+  const personById = new Map(persons.map((p) => [p.id, p]));
+  const branches: ListBranch[] = storedBranches.flatMap((b) => {
+    const a = personById.get(b.parent_a_id);
+    const c = personById.get(b.parent_b_id);
+    if (!a || !c) return [];
+    const d = Math.max(depths.get(a.id) ?? 0, depths.get(c.id) ?? 0);
+    return [
+      { id: b.id, childGroupLabel: `Generation ${d + 2}`, label: `${a.full_name} & ${c.full_name}`, parentIds: [a.id, c.id] },
+    ];
+  });
+
+  const parentsOf = new Map<string, Set<string>>();
+  for (const r of relationships) {
+    if (r.type !== "parent") continue;
+    parentsOf.set(r.person_id, (parentsOf.get(r.person_id) ?? new Set()).add(r.related_person_id));
+  }
+  for (const b of branches) if (!byLabel.has(b.childGroupLabel)) byLabel.set(b.childGroupLabel, []);
+
+  const sections = [...byLabel.keys()]
+    .sort((x, y) => groupRank(x) - groupRank(y))
+    .map((label) => {
+      const people = byLabel.get(label) ?? [];
+      const claimed = new Set<string>();
+      const lists: ListRowList[] = branches
+        .filter((b) => b.childGroupLabel === label)
+        .map((b) => {
+          const kids = people.filter((p) => {
+            const parents = parentsOf.get(p.id);
+            return !claimed.has(p.id) && !!parents?.has(b.parentIds[0]) && !!parents.has(b.parentIds[1]);
+          });
+          kids.forEach((k) => claimed.add(k.id));
+          return { key: `branch:${b.id}`, branch: b, persons: kids };
+        });
+      const rest = people.filter((p) => !claimed.has(p.id));
+      if (rest.length > 0) lists.push({ key: label, persons: rest });
+      return { label, lists };
+    });
+
+  return { sections, branches, depths };
 }
 
 // Generation depth (0 = a root with no parents) for every connected person,

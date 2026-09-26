@@ -42,6 +42,17 @@ export type Relationship = {
   created_by: string;
 };
 
+// A list-view branch: two people from one generation, opened as a place to
+// add their children. Owner-only.
+export type Branch = {
+  id: string;
+  tree_id: string;
+  parent_a_id: string;
+  parent_b_id: string;
+  created_by: string;
+  created_at: string;
+};
+
 export type Notification = {
   id: string;
   tree_id: string;

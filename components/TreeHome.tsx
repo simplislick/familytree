@@ -6,7 +6,7 @@ import TreeNavbar from "@/components/TreeNavbar";
 import TreeCanvas from "@/components/TreeCanvas";
 import TreeList from "@/components/TreeList";
 import AddRelativeForm from "@/components/AddRelativeForm";
-import type { Person, Relationship } from "@/lib/types";
+import type { Branch, Person, Relationship } from "@/lib/types";
 
 type View = "graph" | "list";
 
@@ -19,6 +19,7 @@ export default function TreeHome({
   isOwner,
   persons,
   relationships,
+  branches,
 }: {
   token: string;
   treeName: string;
@@ -26,6 +27,7 @@ export default function TreeHome({
   isOwner: boolean;
   persons: Person[];
   relationships: Relationship[];
+  branches: Branch[];
 }) {
   const [addOpen, setAddOpen] = useState(false);
   const [view, setView] = useState<View>("graph");
@@ -66,7 +68,7 @@ export default function TreeHome({
           <div
             role="group"
             aria-label="View mode"
-            className="fixed left-2 top-16 z-10 flex flex-col gap-0.5 rounded-lg border border-stone-300 bg-white p-0.5 text-sm font-medium shadow-md"
+            className="fixed left-2 top-16 z-10 flex flex-row gap-0.5 rounded-lg border border-stone-300 bg-white p-0.5 text-sm font-medium shadow-md"
           >
             <button
               type="button"
@@ -143,6 +145,7 @@ export default function TreeHome({
             token={token}
             persons={persons}
             relationships={relationships}
+            branches={branches}
             isOwner={isOwner}
           />
         )}

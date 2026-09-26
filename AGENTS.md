@@ -60,7 +60,8 @@ Schema lives in numbered migrations under `supabase/migrations/`
 (`0001_init.sql` = tables/RLS/RPCs, `0002` = photos + storage bucket,
 `0003`/`0004` = placed-person canvas columns, `0005` = lets members read the
 trees they belong to, not just owners, `0006` = per-account `profiles` table
-for the settings-page avatar). Apply with the Supabase CLI
+for the settings-page avatar, `0010` = owner-only `branches` table for
+list-view branches). Apply with the Supabase CLI
 (`supabase link --project-ref <ref>` then `supabase db push`) or by pasting
 into the SQL editor. `scripts/seed.sql` seeds a demo tree (requires an
 existing user) and is run manually in the SQL editor.
