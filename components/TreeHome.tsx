@@ -32,8 +32,10 @@ export default function TreeHome({
   const [addOpen, setAddOpen] = useState(false);
   const [view, setView] = useState<View>("graph");
 
+  const isGraph = view === "graph";
+
   return (
-    <>
+    <div className={isGraph ? "flex h-dvh flex-col" : undefined}>
       <TreeNavbar
         token={token}
         treeName={treeName}
@@ -44,11 +46,19 @@ export default function TreeHome({
         showShare={isOwner}
       />
 
-      <main className="mx-auto max-w-3xl space-y-4 p-4 pt-4">
+      <main
+        className={
+          isGraph
+            ? "relative flex min-h-0 flex-1 flex-col"
+            : "mx-auto max-w-3xl space-y-4 p-4 pt-4"
+        }
+      >
         {!isOwner && (
           <Link
             href={`/t/${token}/join`}
-            className="block min-h-12 rounded-lg bg-stone-800 px-4 py-3 text-center font-medium text-white"
+            className={`block min-h-12 rounded-lg bg-stone-800 px-4 py-3 text-center font-medium text-white ${
+              isGraph ? "m-4 mb-0" : ""
+            }`}
           >
             Join this tree
           </Link>
@@ -134,9 +144,10 @@ export default function TreeHome({
               token={token}
               persons={persons}
               relationships={relationships}
+              branches={branches}
               isOwner={isOwner}
             />
-            <p className="text-xs text-stone-600">
+            <p className="pointer-events-none absolute bottom-3 right-3 z-[5] rounded-md bg-white/80 px-2 py-1 text-xs text-stone-600">
               Drag to pan, pinch or scroll to zoom, tap a person for details.
             </p>
           </>
@@ -150,6 +161,6 @@ export default function TreeHome({
           />
         )}
       </main>
-    </>
+    </div>
   );
 }

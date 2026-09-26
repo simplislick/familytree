@@ -10,19 +10,28 @@ import {
   AVATAR_SIZE,
   NODE_HEIGHT,
   NODE_WIDTH,
-  type LayoutEdge,
-  type LayoutNode,
 } from "@/lib/tree-layout";
-import { disconnectPersons, movePerson, placePerson } from "@/lib/actions";
+import { movePerson, placePerson } from "@/lib/actions";
 import AddRelativeForm from "./AddRelativeForm";
 import PersonAvatar, { GENDER_COLORS } from "./PersonAvatar";
 import PersonCard from "./PersonCard";
-import type { JoinRelation, Person, RelationType, Relationship } from "@/lib/types";
+import type { Branch, JoinRelation, Person, Relationship } from "@/lib/types";
 
 const MIN_SCALE = 0.3;
 const MAX_SCALE = 2.5;
 const TAP_TOLERANCE_PX = 6;
 const HANDLE_WIDTH = 28;
+
+// Background band colour per generation ring (center outward), cycling if a
+// tree runs deeper than the palette. `fill` tints the band, `label` names it.
+const GENERATION_COLORS = [
+  { fill: "#fef3c7", label: "#b45309" },
+  { fill: "#dcfce7", label: "#15803d" },
+  { fill: "#dbeafe", label: "#1d4ed8" },
+  { fill: "#f3e8ff", label: "#7e22ce" },
+  { fill: "#ffe4e6", label: "#be123c" },
+  { fill: "#ccfbf1", label: "#0f766e" },
+];
 
 const RELATION_LABELS: Record<JoinRelation, string> = {
   child: "Child of",
@@ -33,7 +42,6 @@ const RELATION_LABELS: Record<JoinRelation, string> = {
 type View = { x: number; y: number; scale: number };
 type Drag = { personId: string; name: string; photoUrl: string | null; x: number; y: number };
 type ConnectPrompt = { personId: string; personName: string; anchorId: string; anchorName: string };
-type DisconnectPrompt = { relationshipId: string; aName: string; bName: string; type: RelationType };
 type Point = { id: string; x: number; y: number };
 
 // Radial node canvas: pan by dragging, zoom with the scroll wheel or pinch,
@@ -41,22 +49,27 @@ type Point = { id: string; x: number; y: number };
 // automatically as a circular pedigree; a left-side drawer holds everyone
 // else — drag one straight onto the canvas to drop them at a grid-snapped
 // spot (they stay draggable from there), or onto an existing node to connect
-// them for the first time. Click an existing connector line to remove that
-// relationship; adding relationships happens in a person's details card
-// (the Family section).
+// them for the first time. Couples are joined by a line (solid for spouses,
+// dotted for branch parents who aren't married); relationships are managed
+// in a person's details card (the Family section).
 export default function TreeCanvas({
   token,
   persons,
   relationships,
+  branches,
   isOwner,
 }: {
   token: string;
   persons: Person[];
   relationships: Relationship[];
+  branches: Branch[];
   isOwner: boolean;
 }) {
   const router = useRouter();
-  const layout = useMemo(() => computeLayout(persons, relationships), [persons, relationships]);
+  const layout = useMemo(
+    () => computeLayout(persons, relationships, branches),
+    [persons, relationships, branches],
+  );
   const unconnected = useMemo(
     () => getUnconnectedPersons(persons, relationships),
     [persons, relationships],
@@ -71,13 +84,9 @@ export default function TreeCanvas({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [hoverTargetId, setHoverTargetId] = useState<string | null>(null);
-  const [hoverEdgeId, setHoverEdgeId] = useState<string | null>(null);
   const [connectPrompt, setConnectPrompt] = useState<ConnectPrompt | null>(null);
   const [connectError, setConnectError] = useState("");
-  const [disconnectPrompt, setDisconnectPrompt] = useState<DisconnectPrompt | null>(null);
-  const [disconnectError, setDisconnectError] = useState("");
   const [isConnecting, startConnecting] = useTransition();
-  const [isDisconnecting, startDisconnecting] = useTransition();
   const [, startPlacing] = useTransition();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -112,11 +121,7 @@ export default function TreeCanvas({
   const dragOrigin = useRef<{ x: number; y: number } | null>(null);
   const dragMoved = useRef(false);
 
-  const nodeById = useMemo(() => {
-    const map = new Map<string, LayoutNode>();
-    layout.nodes.forEach((n) => map.set(n.id, n));
-    return map;
-  }, [layout]);
+  const nodeById = useMemo(() => new Map(layout.nodes.map((n) => [n.id, n])), [layout]);
 
   const personById = useMemo(() => {
     const map = new Map<string, Person>();
@@ -341,36 +346,13 @@ export default function TreeCanvas({
     });
   }
 
-  function handleEdgeClick(e: React.MouseEvent, edge: LayoutEdge) {
-    e.stopPropagation();
-    const a = personById.get(edge.from);
-    const b = personById.get(edge.to);
-    if (!a || !b) return;
-    setDisconnectError("");
-    setDisconnectPrompt({ relationshipId: edge.id, aName: a.full_name, bName: b.full_name, type: edge.type });
-  }
-
-  function handleDisconnect() {
-    if (!disconnectPrompt) return;
-    setDisconnectError("");
-    startDisconnecting(async () => {
-      const result = await disconnectPersons({ token, relationshipId: disconnectPrompt.relationshipId });
-      if (result.ok) {
-        setDisconnectPrompt(null);
-        router.refresh();
-      } else {
-        setDisconnectError(result.message);
-      }
-    });
-  }
-
   const selected = selectedId ? personById.get(selectedId) : undefined;
   const editingPerson = editingPersonId ? personById.get(editingPersonId) : undefined;
 
   return (
     <div
       ref={containerRef}
-      className="relative h-[70vh] min-h-96 w-full touch-none overflow-hidden rounded-xl border border-stone-200 bg-white"
+      className="relative min-h-0 w-full flex-1 touch-none overflow-hidden bg-white"
     >
       <div
         className="absolute inset-0 cursor-grab active:cursor-grabbing"
@@ -387,48 +369,89 @@ export default function TreeCanvas({
           }}
         >
           <svg width={svgWidth} height={svgHeight} style={{ overflow: "visible" }}>
+            {/* Generation bands, outermost first so each inner disc paints over
+                the one outside it, leaving a coloured ring per generation. */}
+            {[...layout.rings].reverse().map((ring) => {
+              const color = GENERATION_COLORS[ring.depth % GENERATION_COLORS.length];
+              return (
+                <circle
+                  key={`gen-${ring.depth}`}
+                  cx={layout.center.x}
+                  cy={layout.center.y}
+                  r={ring.outerRadius}
+                  fill={color.fill}
+                  stroke={color.label}
+                  strokeOpacity={0.25}
+                />
+              );
+            })}
+            {layout.rings.map((ring) => {
+              const color = GENERATION_COLORS[ring.depth % GENERATION_COLORS.length];
+              return (
+                <text
+                  key={`gen-label-${ring.depth}`}
+                  x={layout.center.x}
+                  y={layout.center.y - ring.outerRadius + 16}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  fontSize={12}
+                  fontWeight={600}
+                  fill={color.label}
+                  className="pointer-events-none select-none"
+                >
+                  Gen {ring.depth + 1}
+                </text>
+              );
+            })}
+            {/* Parent-child lines: from the middle of the parents' couple line,
+                along the gap between rings, into the top of the child. Both
+                parents of a couple share one path, so draw each path once. */}
+            {[...new Map(
+              layout.edges.filter((e) => e.type === "parent" && e.path).map((e) => [e.path!, e]),
+            ).values()].map((e) => (
+              <path
+                key={e.id}
+                d={e.path}
+                fill="none"
+                stroke="#57534e"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            ))}
+            {/* Couple lines, avatar center to avatar center (the avatars
+                paint over the ends): solid for a spouse relationship, dotted
+                for branch parents who aren't in one. Generation 1 couples get
+                a straight line; every outer generation's line arcs around the
+                tree's center so it follows its ring. */}
             {layout.edges.map((e) => {
+              if (e.type === "parent") return null;
               const from = nodeById.get(e.from);
               const to = nodeById.get(e.to);
               if (!from || !to) return null;
-              const isHovered = hoverEdgeId === e.id;
-              const stroke = isHovered ? "#dc2626" : "#57534e";
-              if (e.type === "spouse") {
-                const x1 = from.x + NODE_WIDTH / 2;
-                const y1 = from.y + AVATAR_SIZE / 2;
-                const x2 = to.x + NODE_WIDTH / 2;
-                const y2 = to.y + AVATAR_SIZE / 2;
-                return (
-                  <g
-                    key={e.id}
-                    className="cursor-pointer"
-                    onClick={(ev) => handleEdgeClick(ev, e)}
-                    onPointerEnter={() => setHoverEdgeId(e.id)}
-                    onPointerLeave={() => setHoverEdgeId(null)}
-                  >
-                    <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={16} />
-                    <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={stroke} strokeWidth={2} />
-                  </g>
-                );
+              const x1 = from.x + NODE_WIDTH / 2;
+              const y1 = from.y + AVATAR_SIZE / 2;
+              const x2 = to.x + NODE_WIDTH / 2;
+              const y2 = to.y + AVATAR_SIZE / 2;
+              let d = `M ${x1} ${y1} L ${x2} ${y2}`;
+              if (from.depth > 0 || to.depth > 0) {
+                const { x: cx, y: cy } = layout.center;
+                const r = (Math.hypot(x1 - cx, y1 - cy) + Math.hypot(x2 - cx, y2 - cy)) / 2;
+                let delta = Math.atan2(y2 - cy, x2 - cx) - Math.atan2(y1 - cy, x1 - cx);
+                while (delta > Math.PI) delta -= 2 * Math.PI;
+                while (delta < -Math.PI) delta += 2 * Math.PI;
+                d = `M ${x1} ${y1} A ${r} ${r} 0 0 ${delta >= 0 ? 1 : 0} ${x2} ${y2}`;
               }
-              // Parent edge: radial elbow (out from the parent, arc to the
-              // child's angle, out to the child) precomputed by the layout so
-              // the tree reads as a circular dendrogram; straight line as a
-              // defensive fallback if a path wasn't computed.
-              const d =
-                e.path ||
-                `M ${from.x + NODE_WIDTH / 2} ${from.y + AVATAR_SIZE} L ${to.x + NODE_WIDTH / 2} ${to.y}`;
               return (
-                <g
+                <path
                   key={e.id}
-                  className="cursor-pointer"
-                  onClick={(ev) => handleEdgeClick(ev, e)}
-                  onPointerEnter={() => setHoverEdgeId(e.id)}
-                  onPointerLeave={() => setHoverEdgeId(null)}
-                >
-                  <path d={d} fill="none" stroke="transparent" strokeWidth={16} />
-                  <path d={d} fill="none" stroke={stroke} strokeWidth={2} />
-                </g>
+                  d={d}
+                  fill="none"
+                  stroke="#57534e"
+                  strokeWidth={2}
+                  strokeDasharray={e.type === "branch" ? "2 5" : undefined}
+                  strokeLinecap="round"
+                />
               );
             })}
             {layout.nodes.map((n) => {
@@ -567,44 +590,6 @@ export default function TreeCanvas({
               Cancel
             </button>
             {connectError && <p className="text-sm text-red-700">{connectError}</p>}
-          </div>
-        </div>
-      )}
-
-      {disconnectPrompt && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center">
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => (isDisconnecting ? null : setDisconnectPrompt(null))}
-            aria-hidden="true"
-          />
-          <div className="relative z-10 w-full max-w-xs space-y-3 rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl">
-            <h3 className="font-semibold">
-              Disconnect {disconnectPrompt.aName} and {disconnectPrompt.bName}?
-            </h3>
-            <p className="text-sm text-stone-600">
-              This removes the {disconnectPrompt.type === "spouse" ? "spouse" : "parent-child"} connection
-              between them.
-            </p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={isDisconnecting}
-                onClick={handleDisconnect}
-                className="min-h-11 flex-1 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-              >
-                {isDisconnecting ? "Disconnecting…" : "Disconnect"}
-              </button>
-              <button
-                type="button"
-                disabled={isDisconnecting}
-                onClick={() => setDisconnectPrompt(null)}
-                className="min-h-11 rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-stone-700 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-            </div>
-            {disconnectError && <p className="text-sm text-red-700">{disconnectError}</p>}
           </div>
         </div>
       )}

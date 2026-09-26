@@ -4,18 +4,31 @@ export type LayoutNode = {
   id: string;
   x: number;
   y: number;
+  // Generation ring the node sits on (0 = the center generation).
+  depth: number;
 };
 
 export type LayoutEdge = {
   id: string;
-  type: "parent" | "spouse";
+  // "branch" pairs a list-view branch's two parents who have no spouse
+  // edge between them.
+  type: "parent" | "spouse" | "branch";
   from: string;
   to: string;
   // Precomputed SVG path for parent edges, drawn as a radial elbow (out from
   // the parent, arc across to the child's angle, out to the child) so the
-  // tree reads as a circular dendrogram. Absent for spouse edges, which are
-  // simple straight lines the canvas draws itself.
+  // tree reads as a circular dendrogram. Absent for spouse and branch edges,
+  // which are simple straight lines the canvas draws itself.
   path?: string;
+};
+
+// One generation's band on the radial canvas, in the same absolute space as
+// the nodes: everything between innerRadius and outerRadius around `center`
+// belongs to generation `depth` (0 = the center).
+export type GenerationRing = {
+  depth: number;
+  innerRadius: number;
+  outerRadius: number;
 };
 
 export type TreeLayout = {
@@ -23,6 +36,8 @@ export type TreeLayout = {
   edges: LayoutEdge[];
   width: number;
   height: number;
+  center: { x: number; y: number };
+  rings: GenerationRing[];
 };
 
 export const NODE_WIDTH = 120;
@@ -239,12 +254,14 @@ export function getGenerationDepths(
 export function computeLayout(
   allPersons: Person[],
   allRelationships: Relationship[],
+  storedBranches: StoredBranch[] = [],
 ): TreeLayout {
-  if (allPersons.length === 0) return { nodes: [], edges: [], width: 0, height: 0 };
+  const empty: TreeLayout = { nodes: [], edges: [], width: 0, height: 0, center: { x: 0, y: 0 }, rings: [] };
+  if (allPersons.length === 0) return empty;
 
   const connectedIds = getConnectedIds(allPersons, allRelationships);
   const persons = allPersons.filter((p) => connectedIds.has(p.id));
-  if (persons.length === 0) return { nodes: [], edges: [], width: 0, height: 0 };
+  if (persons.length === 0) return empty;
 
   const ids = new Set(persons.map((p) => p.id));
   const parentEdges = allRelationships.filter(
@@ -261,12 +278,32 @@ export function computeLayout(
   // Depth: longest distance from a root (person with no parents), so parents
   // always sit above their children even in uneven branches. Spouses share
   // a generation.
-  const depth = getGenerationDepths(allPersons, allRelationships);
+  //
+  // The list view dictates the arrangement: every person's rank is their
+  // position reading the list top to bottom (generation sections, then each
+  // section's branch lists, then its remaining people).
+  const { sections, branches, depths: depth } = buildListSections(allPersons, allRelationships, storedBranches);
+  const listRank = new Map<string, number>();
+  for (const section of sections) {
+    for (const list of section.lists) for (const p of list.persons) listRank.set(p.id, listRank.size);
+  }
+  const rankOf = (id: string) => listRank.get(id) ?? Number.MAX_SAFE_INTEGER;
+  persons.sort((a, b) => rankOf(a.id) - rankOf(b.id));
 
   const spouseOf = new Map<string, string>();
   for (const e of spouseEdges) {
     spouseOf.set(e.person_id, e.related_person_id);
     spouseOf.set(e.related_person_id, e.person_id);
+  }
+  // A branch's two parents sit together as a couple too, even without a
+  // spouse edge, as long as neither already has a partner and they share a
+  // generation — the list view presents them as their children's parents.
+  for (const b of branches) {
+    const [a, c] = b.parentIds;
+    if (!ids.has(a) || !ids.has(c) || spouseOf.has(a) || spouseOf.has(c)) continue;
+    if (depth.get(a) !== depth.get(c)) continue;
+    spouseOf.set(a, c);
+    spouseOf.set(c, a);
   }
 
   // Group persons into units: a couple is one unit, a single person is one.
@@ -286,19 +323,29 @@ export function computeLayout(
       spouse && !visited.has(spouse)
         ? { memberIds: [p.id, spouse], depth: depth.get(p.id) ?? 0 }
         : { memberIds: [p.id], depth: depth.get(p.id) ?? 0 };
+    // From generation 2 outward, a spouse who married in (no parents in the
+    // tree) always sits on the right of their partner — the clockwise side,
+    // i.e. memberIds[1] — so the family's own child comes first.
+    if (unit.depth > 0 && unit.memberIds.length === 2) {
+      const hasParents = (id: string) => (parentsOf.get(id) ?? []).length > 0;
+      const [first, second] = unit.memberIds;
+      if (!hasParents(first) && hasParents(second)) unit.memberIds = [second, first];
+    }
     units.push(unit);
     for (const id of unit.memberIds) {
       unitByPerson.set(id, unit);
       visited.add(id);
     }
   }
-  // Units follow the list view's order (list_order, then name): sibling
-  // units fan out clockwise in the same order their people appear in the
-  // list, so reordering the list view rearranges the radial graph.
-  const listRank = new Map<string, number>();
-  sortPersonsForList(persons).forEach((p, i) => listRank.set(p.id, i));
-  const unitRank = (u: Unit) =>
-    Math.min(...u.memberIds.map((id) => listRank.get(id) ?? Number.MAX_SAFE_INTEGER));
+  // Units follow the list view's order: sibling units fan out clockwise in
+  // the same order their people appear in the list, so reordering the list
+  // view rearranges the radial graph. A couple ranks by its member who is a
+  // child in the tree, not by a spouse who married in (and sits in a
+  // different list); failing that, by its earliest member.
+  const unitRank = (u: Unit) => {
+    const bloodline = u.memberIds.filter((id) => (parentsOf.get(id) ?? []).length > 0);
+    return Math.min(...(bloodline.length ? bloodline : u.memberIds).map(rankOf));
+  };
   units.sort((a, b) => unitRank(a) - unitRank(b));
 
   const maxDepth = Math.max(...units.map((u) => u.depth));
@@ -306,22 +353,28 @@ export function computeLayout(
   // Each unit's "tree parent" is the unit containing whichever parent
   // achieves the unit's own depth (the same parent getGenerationDepths used
   // to derive that depth), so the angular tree matches the ring a unit sits
-  // on even when a child's two parents land in different units.
+  // on even when a child's two parents land in different units. When both
+  // parents qualify but sit in different units — children of a previous
+  // relationship, e.g. a separated pair joined by a dotted branch line — the
+  // smaller unit wins, i.e. the ex-partner who hasn't re-partnered, so those
+  // children fan out on that side instead of among the current couple's.
   const parentUnitOf = new Map<Unit, Unit | undefined>();
   for (const u of units) {
-    let bestId: string | undefined;
+    let best: Unit | undefined;
     let bestDepth = -1;
     for (const id of u.memberIds) {
       if ((depth.get(id) ?? 0) !== u.depth) continue;
       for (const pid of parentsOf.get(id) ?? []) {
         const d = depth.get(pid) ?? 0;
-        if (d > bestDepth) {
+        const pu = unitByPerson.get(pid);
+        if (!pu) continue;
+        if (d > bestDepth || (d === bestDepth && best && pu.memberIds.length < best.memberIds.length)) {
           bestDepth = d;
-          bestId = pid;
+          best = pu;
         }
       }
     }
-    parentUnitOf.set(u, bestId ? unitByPerson.get(bestId) : undefined);
+    parentUnitOf.set(u, best);
   }
 
   const childrenOf = new Map<Unit, Unit[]>();
@@ -375,6 +428,32 @@ export function computeLayout(
   const ROOT_ANGLE_OFFSET = Math.PI / 2;
   assignAngles(rootUnits, ROOT_ANGLE_OFFSET, ROOT_ANGLE_OFFSET + 2 * Math.PI);
 
+  // Even spacing: the weighted split above only decides each ring's
+  // clockwise order (so children stay on their parents' side of the circle);
+  // every ring is then re-spread so its people sit evenly around the full
+  // circle, a couple taking two people's worth of arc. Each ring is rotated
+  // as a whole to stay as close as it can to those weighted angles.
+  for (const row of byGeneration) {
+    if (row.length < 2) continue;
+    const ordered = [...row].sort((a, b) => (angleOf.get(a) ?? 0) - (angleOf.get(b) ?? 0));
+    const totalPeople = ordered.reduce((sum, u) => sum + u.memberIds.length, 0);
+    let cursor = 0;
+    const even = ordered.map((u) => {
+      const mid = ((cursor + u.memberIds.length / 2) / totalPeople) * 2 * Math.PI;
+      cursor += u.memberIds.length;
+      return mid;
+    });
+    let sinSum = 0;
+    let cosSum = 0;
+    ordered.forEach((u, i) => {
+      const diff = (angleOf.get(u) ?? 0) - even[i];
+      sinSum += Math.sin(diff);
+      cosSum += Math.cos(diff);
+    });
+    const rotation = Math.atan2(sinSum, cosSum);
+    ordered.forEach((u, i) => angleOf.set(u, even[i] + rotation));
+  }
+
   // Ring radius per depth: 0 for a single root (it sits dead center), else
   // large enough that a ring's units don't crowd each other, growing by at
   // least MIN_RING_GAP per generation.
@@ -406,11 +485,15 @@ export function computeLayout(
     const tangY = r < 1e-6 ? 0 : Math.cos(angle);
     const cx = dirX * r;
     const cy = dirY * r;
-    for (const id of u.memberIds) unitCenterOfPerson.set(id, { x: cx, y: cy });
+    const half = (NODE_WIDTH + X_GAP) / 2;
+    // Outside generation 1 a couple's line is drawn as an arc around the
+    // tree's center through both avatars, so its midpoint sits further out
+    // than the straight chord's: on the unit's angle at the avatars' radius.
+    const lineMidR = u.memberIds.length === 2 && u.depth > 0 ? Math.hypot(r, half) : r;
+    for (const id of u.memberIds) unitCenterOfPerson.set(id, { x: dirX * lineMidR, y: dirY * lineMidR });
     if (u.memberIds.length === 1) {
       relCenter.set(u.memberIds[0], { x: cx, y: cy });
     } else {
-      const half = (NODE_WIDTH + X_GAP) / 2;
       relCenter.set(u.memberIds[0], { x: cx - tangX * half, y: cy - tangY * half });
       relCenter.set(u.memberIds[1], { x: cx + tangX * half, y: cy + tangY * half });
     }
@@ -427,29 +510,36 @@ export function computeLayout(
   const nodes: LayoutNode[] = units.flatMap((u) =>
     u.memberIds.map((id) => {
       const c = relCenter.get(id)!;
-      return { id, x: c.x + shiftX - NODE_WIDTH / 2, y: c.y + shiftY - AVATAR_SIZE / 2 };
+      return { id, x: c.x + shiftX - NODE_WIDTH / 2, y: c.y + shiftY - AVATAR_SIZE / 2, depth: u.depth };
     }),
   );
 
   // Parent-edge connector: out from the parent UNIT's center — the midpoint
-  // of the spouse line for a couple, so every child's edge starts at the
+  // of the couple line for a couple, so every child's edge starts at the
   // same point and the branch reads as one drop line off the marriage line —
-  // to the ring midway to the child, arc across to the child's angle, then
-  // out to the child's own avatar. Reads as a radial elbow instead of a
-  // straight line cutting across the circle.
-  const parentEdgePath = (fromId: string, toId: string): string => {
-    const p = unitCenterOfPerson.get(fromId) ?? relCenter.get(fromId);
+  // into the child's own generation band, arc across (inside that band, so
+  // the line never runs around the parents' generation) to the child's
+  // angle, then out to the top of the child's avatar (the edge facing the
+  // tree's center). Reads as a radial elbow instead of a straight line
+  // cutting across the circle.
+  const parentEdgePath = (p: { x: number; y: number } | undefined, toId: string): string => {
     const c = relCenter.get(toId);
     if (!p || !c) return "";
     const abs = (x: number, y: number) => `${x + shiftX} ${y + shiftY}`;
     const rp = Math.hypot(p.x, p.y);
     const rc = Math.hypot(c.x, c.y);
+    if (rc < 1e-6) return "";
+    const ac = Math.atan2(c.y, c.x);
+    const rTop = rc - AVATAR_SIZE / 2;
+    const top = { x: rTop * Math.cos(ac), y: rTop * Math.sin(ac) };
     if (rp < 1e-6) {
-      return `M ${abs(p.x, p.y)} L ${abs(c.x, c.y)}`;
+      return `M ${abs(p.x, p.y)} L ${abs(top.x, top.y)}`;
     }
     const ap = Math.atan2(p.y, p.x);
-    const ac = Math.atan2(c.y, c.x);
-    const rMid = (rp + rc) / 2;
+    // Midway between the child band's inner edge and the child's avatar top.
+    const childDepth = unitByPerson.get(toId)?.depth ?? 0;
+    const bandInner = childDepth === 0 ? 0 : (radiusOf[childDepth - 1] + radiusOf[childDepth]) / 2;
+    const rMid = Math.max(rp, (bandInner + rTop) / 2);
     const bx1 = rMid * Math.cos(ap);
     const by1 = rMid * Math.sin(ap);
     const bx2 = rMid * Math.cos(ac);
@@ -458,19 +548,72 @@ export function computeLayout(
     while (delta > Math.PI) delta -= 2 * Math.PI;
     while (delta < -Math.PI) delta += 2 * Math.PI;
     const sweep = delta >= 0 ? 1 : 0;
-    return `M ${abs(p.x, p.y)} L ${abs(bx1, by1)} A ${rMid} ${rMid} 0 0 ${sweep} ${abs(bx2, by2)} L ${abs(c.x, c.y)}`;
+    return `M ${abs(p.x, p.y)} L ${abs(bx1, by1)} A ${rMid} ${rMid} 0 0 ${sweep} ${abs(bx2, by2)} L ${abs(top.x, top.y)}`;
+  };
+
+  // Branch parents who aren't married to each other still get a (dotted)
+  // line in the canvas, whether or not they ended up side by side.
+  const isSpousePair = (a: string, c: string) =>
+    spouseEdges.some(
+      (e) =>
+        (e.person_id === a && e.related_person_id === c) || (e.person_id === c && e.related_person_id === a),
+    );
+  const branchEdges = branches.filter(
+    (b) => ids.has(b.parentIds[0]) && ids.has(b.parentIds[1]) && !isSpousePair(b.parentIds[0], b.parentIds[1]),
+  );
+
+  // Where a child's line starts. Two parents who are a couple (one unit):
+  // the middle of their couple line. Two parents in different units but
+  // joined by a branch line (a previous relationship): the middle of that
+  // dotted line — straight in generation 1, an arc around the center
+  // outside it, matching how the canvas draws it. Otherwise each parent's
+  // own couple-line middle (or avatar), one line per parent.
+  const branchPairKey = (a: string, c: string) => [a, c].sort().join("|");
+  const branchLinked = new Set(branchEdges.map((b) => branchPairKey(b.parentIds[0], b.parentIds[1])));
+  const lineMidpoint = (a: string, c: string): { x: number; y: number } | undefined => {
+    const pa = relCenter.get(a);
+    const pc = relCenter.get(c);
+    if (!pa || !pc) return undefined;
+    if ((depth.get(a) ?? 0) === 0 && (depth.get(c) ?? 0) === 0) {
+      return { x: (pa.x + pc.x) / 2, y: (pa.y + pc.y) / 2 };
+    }
+    const r = (Math.hypot(pa.x, pa.y) + Math.hypot(pc.x, pc.y)) / 2;
+    const a1 = Math.atan2(pa.y, pa.x);
+    let delta = Math.atan2(pc.y, pc.x) - a1;
+    while (delta > Math.PI) delta -= 2 * Math.PI;
+    while (delta < -Math.PI) delta += 2 * Math.PI;
+    return { x: r * Math.cos(a1 + delta / 2), y: r * Math.sin(a1 + delta / 2) };
+  };
+  const lineStart = (parentId: string, childId: string) => {
+    const parents = parentsOf.get(childId) ?? [];
+    if (parents.length === 2) {
+      const [a, c] = parents;
+      if (unitByPerson.get(a) === unitByPerson.get(c)) return unitCenterOfPerson.get(a);
+      if (branchLinked.has(branchPairKey(a, c))) return lineMidpoint(a, c);
+    }
+    return unitCenterOfPerson.get(parentId) ?? relCenter.get(parentId);
   };
 
   const edges: LayoutEdge[] = [
     ...spouseEdges.map((e) => ({ id: e.id, type: "spouse" as const, from: e.person_id, to: e.related_person_id })),
+    ...branchEdges.map((b) => ({ id: `branch:${b.id}`, type: "branch" as const, from: b.parentIds[0], to: b.parentIds[1] })),
     ...parentEdges.map((e) => ({
       id: e.id,
       type: "parent" as const,
       from: e.related_person_id,
       to: e.person_id,
-      path: parentEdgePath(e.related_person_id, e.person_id),
+      path: parentEdgePath(lineStart(e.related_person_id, e.person_id), e.person_id),
     })),
   ];
+
+  // Generation bands: each ring's boundary sits halfway between its radius
+  // and its neighbours', so every avatar lands in the middle of its band.
+  // The outermost band extends half a ring gap past its avatars.
+  const rings: GenerationRing[] = radiusOf.map((r, d) => ({
+    depth: d,
+    innerRadius: d === 0 ? 0 : (radiusOf[d - 1] + r) / 2,
+    outerRadius: d === maxDepth ? r + MIN_RING_GAP / 2 : (r + radiusOf[d + 1]) / 2,
+  }));
 
   const xs = nodes.map((n) => n.x);
   const ys = nodes.map((n) => n.y);
@@ -480,5 +623,7 @@ export function computeLayout(
     edges,
     width: Math.max(...xs) - Math.min(...xs) + NODE_WIDTH,
     height: Math.max(...ys) - Math.min(...ys) + NODE_HEIGHT,
+    center: { x: shiftX, y: shiftY },
+    rings,
   };
 }

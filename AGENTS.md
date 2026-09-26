@@ -107,8 +107,10 @@ Key data model points (see `lib/types.ts` for the TS mirror):
   wired from `middleware.ts` at the project root).
 - `components/` — UI, all client components. `TreeCanvas.tsx` (~900 lines) is
   the interactive SVG canvas: pan/zoom, tap for details, node dragging with
-  grid snap, wire-drag connections between ports, disconnect prompts, and the
-  unconnected-members drawer.
+  grid snap, generation bands, and the unconnected-members drawer. It
+  draws couple lines (solid for spouses, dotted for list-view branch parents
+  with no spouse edge; arcs outside generation 1) and parent-child elbows
+  from the couple line's midpoint to the top of the child's avatar.
 
 ## Conventions
 
