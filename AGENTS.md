@@ -6,7 +6,9 @@ Guidance for AI coding agents working in this repository.
 
 Family Tree Platform (MVP): a mobile-first web app for building shareable
 family trees. There is no sign-in screen: every visitor gets a silent
-anonymous Supabase Auth session on first load. A user creates a tree and
+anonymous Supabase Auth session on first load, and can optionally sign in
+with an emailed magic link (Settings overlay on the home page) so their trees
+follow them across browsers. A user creates a tree and
 shares one `/t/[token]` link; family members join by submitting their name
 (and optionally email/phone, used only for matching), which either claims an
 existing placeholder profile or positions them manually relative to an
@@ -16,7 +18,7 @@ add, move, connect, or remove people.
 - **Stack:** Next.js 15 (App Router, Turbopack) + React 19 + TypeScript +
   Tailwind CSS v4 (via PostCSS plugin).
 - **Backend:** Supabase — Postgres with Row Level Security, Supabase Auth
-  (silent anonymous sessions only — no login UI, no email/OTP), and
+  (silent anonymous sessions, plus optional email magic-link sign-in), and
   Supabase Storage (public
   `person-photos` bucket). There is no custom API layer: data access is direct
   `supabase-js` calls from Server Components and Server Actions, plus
@@ -81,11 +83,12 @@ Key data model points (see `lib/types.ts` for the TS mirror):
 
 - `app/` — App Router pages: `page.tsx` (home: my trees + notifications),
   `tree/new` (create), `t/[token]` (tree view), `t/[token]/join` and
-  `t/[token]/position` (join flow).
+  `t/[token]/position` (join flow), `auth/callback/route.ts` (magic-link
+  landing: exchanges the emailed code for a session).
 - `lib/actions.ts` — all Server Actions (prefixed `"use server"`): tree
   create/rename, `addRelative`, `placePerson`, `connectPersons`,
   `disconnectPersons`, `movePerson`, `removePerson`, `updatePersonPhoto`,
-  notification read. They return `ActionResult` (`{ ok, message? }`) except
+  notification read, `sendSignInLink`/`signOut`. They return `ActionResult` (`{ ok, message? }`) except
   `createTree`, which `redirect()`s. Every action re-checks ownership via the
   tree's `owner_id` — keep that pattern when adding actions.
 - `lib/matching.ts` — `completeJoin` Server Action wrapping the
@@ -141,4 +144,6 @@ Key data model points (see `lib/types.ts` for the TS mirror):
 
 Target is Vercel: push the repo, import it, and set the two `NEXT_PUBLIC_*`
 env vars. Anonymous sign-ins must be enabled in the Supabase project's
-Authentication settings.
+Authentication settings, and each deployed origin's `/auth/callback` must be
+listed under Authentication → URL Configuration → Redirect URLs for magic
+links to work.

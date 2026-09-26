@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
 import { nanoid } from "nanoid";
 import { createClient } from "@/lib/supabase/server";
 import type { JoinRelation, RelationType, Tree } from "@/lib/types";
@@ -573,6 +574,39 @@ export async function markNotificationRead(notificationId: string): Promise<Acti
     .from("notifications")
     .update({ read: true })
     .eq("id", notificationId);
+  if (error) return { ok: false, message: error.message };
+
+  revalidatePath("/");
+  return { ok: true };
+}
+
+/**
+ * Emails a magic sign-in link. Clicking it lands on /auth/callback, which
+ * replaces the anonymous session with the email account's session.
+ */
+export async function sendSignInLink(email: string): Promise<ActionResult> {
+  const supabase = await createClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+
+  const trimmed = email.trim();
+  if (!trimmed) return { ok: false, message: "Please enter your email." };
+
+  const h = await headers();
+  const origin = h.get("origin") ?? `http://${h.get("host")}`;
+  const { error } = await supabase.auth.signInWithOtp({
+    email: trimmed,
+    options: { emailRedirectTo: `${origin}/auth/callback` },
+  });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true };
+}
+
+/** Signs out; the middleware then starts a fresh anonymous session. */
+export async function signOut(): Promise<ActionResult> {
+  const supabase = await createClient();
+  if (!supabase) return { ok: false, message: "Supabase is not configured." };
+
+  const { error } = await supabase.auth.signOut();
   if (error) return { ok: false, message: error.message };
 
   revalidatePath("/");

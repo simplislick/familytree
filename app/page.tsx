@@ -6,7 +6,12 @@ import type { Notification, Tree } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-export default async function Home() {
+export default async function Home({
+  searchParams,
+}: {
+  searchParams: Promise<{ signin?: string }>;
+}) {
+  const { signin } = await searchParams;
   const supabase = await createClient();
   const {
     data: { user },
@@ -34,9 +39,20 @@ export default async function Home() {
 
   return (
     <div className="min-h-screen">
-      <HomeHeader avatarUrl={avatarUrl} notifications={feed} />
+      <HomeHeader
+        avatarUrl={avatarUrl}
+        notifications={feed}
+        email={user && !user.is_anonymous ? (user.email ?? null) : null}
+      />
 
       <main className="mx-auto flex max-w-md flex-col gap-8 p-6 py-10">
+        {signin === "failed" && (
+          <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+            That sign-in link is invalid or expired. Request a new one from
+            Settings, and open it in the same browser you requested it from.
+          </p>
+        )}
+
         <p className="text-stone-600">
           Build your family tree together. Create a tree, share one link, and
           let family members add themselves.

@@ -4,7 +4,12 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import TreeNavbar from "@/components/TreeNavbar";
 import PersonAvatar from "@/components/PersonAvatar";
-import { markNotificationRead, updateProfilePhoto } from "@/lib/actions";
+import {
+  markNotificationRead,
+  sendSignInLink,
+  signOut,
+  updateProfilePhoto,
+} from "@/lib/actions";
 import { uploadPersonPhoto } from "@/lib/photo-upload";
 import type { Notification } from "@/lib/types";
 
@@ -13,14 +18,43 @@ import type { Notification } from "@/lib/types";
 export default function HomeHeader({
   avatarUrl,
   notifications,
+  email,
 }: {
   avatarUrl: string | null;
   notifications: Notification[];
+  /** Signed-in email account, or null for an anonymous session. */
+  email: string | null;
 }) {
   const router = useRouter();
   const [overlay, setOverlay] = useState<"settings" | "notifications" | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [linkSentTo, setLinkSentTo] = useState("");
+  const [accountError, setAccountError] = useState("");
+
+  async function handleSendLink(formData: FormData) {
+    const address = String(formData.get("email") ?? "");
+    setAccountError("");
+    setIsSending(true);
+    const result = await sendSignInLink(address);
+    setIsSending(false);
+    if (result.ok) {
+      setLinkSentTo(address.trim());
+    } else {
+      setAccountError(result.message);
+    }
+  }
+
+  async function handleSignOut() {
+    setAccountError("");
+    const result = await signOut();
+    if (result.ok) {
+      router.refresh();
+    } else {
+      setAccountError(result.message);
+    }
+  }
   const hasUnread = notifications.some((n) => !n.read);
 
   async function handlePhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -102,6 +136,50 @@ export default function HomeHeader({
             </div>
 
             {error && <p className="mt-2 text-sm text-red-700">{error}</p>}
+
+            <div className="mt-6 border-t border-stone-200 pt-4">
+              <h4 className="text-base font-semibold text-stone-900">Account</h4>
+              {email ? (
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <p className="truncate text-sm text-stone-600">
+                    Signed in as <span className="font-medium text-stone-900">{email}</span>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleSignOut}
+                    className="min-h-11 shrink-0 px-2 text-sm font-medium text-stone-800 underline"
+                  >
+                    Sign out
+                  </button>
+                </div>
+              ) : linkSentTo ? (
+                <p className="mt-2 text-sm text-stone-600">
+                  Check <span className="font-medium text-stone-900">{linkSentTo}</span> for a
+                  sign-in link, and open it in this browser.
+                </p>
+              ) : (
+                <form action={handleSendLink} className="mt-2 space-y-3">
+                  <p className="text-sm text-stone-600">
+                    Sign in with email to keep your trees across browsers and devices.
+                  </p>
+                  <input
+                    type="email"
+                    name="email"
+                    required
+                    placeholder="you@example.com"
+                    className="block min-h-11 w-full rounded-lg border border-stone-300 px-3 py-2"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isSending}
+                    className="min-h-11 w-full rounded-lg bg-stone-800 px-4 py-2 font-medium text-white disabled:opacity-60"
+                  >
+                    {isSending ? "Sending…" : "Email me a sign-in link"}
+                  </button>
+                </form>
+              )}
+              {accountError && <p className="mt-2 text-sm text-red-700">{accountError}</p>}
+            </div>
           </div>
         </div>
       )}
